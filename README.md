@@ -127,8 +127,9 @@ Steps 1–6 of [`plans/next-steps.md`](plans/next-steps.md) are implemented:
 - the corpus generator is [`conformance/from-git-check-ignore.mjs`](conformance/from-git-check-ignore.mjs), a
   separate step because it needs a checkout CI will not have.
 
-What remains is **publishing** (step 7): once this project has a version, `fs-meta`'s path dependency
-(`../gitignore` in its `build.zig.zon`) becomes a version range, the way `hr.hrg:wyhash` is consumed. The Java and JS
+What remains is **publishing** (step 7), scheduled for **0.3.0**: [Publishing](#publishing) is the checklist, and once
+the version is on the registry, `fs-meta`'s path dependency (`../gitignore` in its `build.zig.zon`, `file:` in its
+`package.json`) becomes a version range, the way `hr.hrg:wyhash` is consumed. The Java and JS
 ports still consume the vectors and the bench rather than re-deriving them, and a `bench/compare.mjs` that runs
 several ports in one table is a convenience, not a contract.
 
@@ -185,26 +186,45 @@ import { GitIgnoreRules, parseGitignore, readGitignore } from '@hrg/gitignore';
 import { compileSegments, segmentsMatch } from '@hrg/gitignore/glob';
 ```
 
-The package is `package.json` here (`"type": "module"`, `.` → `js/gitignore.mjs`, `./glob` → `js/glob.mjs`);
-`bun pm pack` ships those two files and the README, nothing else.
+The package is `package.json` here (`"type": "module"`, `"sideEffects": false`, `.` → `js/gitignore.mjs`,
+`./glob` → `js/glob.mjs`, `./package.json` → `package.json`); `bun pm pack` ships exactly those two modules plus
+`package.json` and the README, nothing else.
 
 ```xml
 <!-- Java: hr.hrg:gitignore, resolved the way hr.hrg:wyhash is. -->
 <dependency>
     <groupId>hr.hrg</groupId>
     <artifactId>gitignore</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
 `pom.xml` builds the three matcher classes — `GitIgnoreFile`, `GitIgnoreRules` and the package-private `Glob` —
-with JDK 25. `bun java/run.mjs` remains the zero-build gate for the port. Until `0.2.0` is published, a machine
+with JDK 25. `bun java/run.mjs` remains the zero-build gate for the port. Until `0.3.0` is published, a machine
 needs the checkout installed once into the local repository:
 
 ```text
 cd gitignore
 mvn -q install
 ```
+
+## Publishing
+
+`@hrg/gitignore` is published under the `hrg` npm scope; `publishConfig` sets `access` to `public`, so a plain
+`npm publish` publishes it publicly. This release is **0.3.0** — the same version as `build.zig.zon` and
+`pom.xml`. The JavaScript package is plain ESM with no Bun API and no dependencies, so it installs and runs under
+Node as well as Bun (`engines.node` is `>=18`).
+
+```bash
+cd gitignore
+bun js/conformance.mjs        # 34/34
+bun pm pack --dry-run         # package.json, README.md, js/gitignore.mjs, js/glob.mjs — nothing else
+npm publish                   # from the repository root; publishConfig supplies --access public
+```
+
+After it is on the registry, [`fs-meta`](https://github.com/hrgdavor/fs-meta)'s `package.json` should switch its
+`@hrg/gitignore` dependency from the local `file:` link to the published version range (`^0.3.0`), exactly as the
+Java port moves from a local `mvn install` to the released `hr.hrg:gitignore:0.3.0`.
 
 ## Licence
 
