@@ -88,9 +88,12 @@ function escapeRegExp(character) {
 }
 
 function translateCharacterClass(glob, open) {
-  const close = glob.indexOf(']', open + 1);
+    // A `]` immediately after the opener is a member, not the terminator: `[]]x` holds `]` then `x`.
+    const from = glob[open + 1] === ']' ? open + 2 : open + 1;
+    const close = glob.indexOf(']', from);
   if (close < 0) {
-    return { regex: '\\[', close: open };    // an unterminated class is a literal '[', like git
+      // git's wildmatch aborts the whole pattern, so the class matches nothing and the rest is not read.
+      return { regex: '(?!)', close: glob.length - 1 };
   }
   const body = glob.slice(open + 1, close);
   let translated = '[';
