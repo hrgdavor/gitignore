@@ -87,6 +87,21 @@
                 <artifactId>maven-deploy-plugin</artifactId>
                 <version>${maven.deploy.plugin.version}</version>
             </plugin>
+            <!-- The Central publisher MUST be at the top level: Maven reads <extensions> only from the build, never from a
+                 profile. Declared in the publish profile it was silently never loaded, so `deploy` staged the bundle and
+                 stopped - no upload, no "central" in the log. It takes over deploy and suppresses the legacy deploy plugin;
+                 that is why direct deployment to maven-releases is not an alternative (it uploads, then fails verification,
+                 because the Portal expects a bundle). -->
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>${central.publishing.plugin.version}</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>true</autoPublish>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
     <profiles>
