@@ -139,7 +139,7 @@ public final class GitIgnoreFile {
     }
 
     /** One pattern: its polarity, whether it is directory-only, and its compiled form. */
-    private record Rule(boolean negated, boolean directoryOnly, Pattern pattern) {
+    private record Rule(boolean negated, boolean directoryOnly, Glob.Segment[] segments) {
 
         /**
          * Parses one line: {@code null} for a blank line or a comment.
@@ -168,27 +168,33 @@ public final class GitIgnoreFile {
             if (line.isEmpty()) {
                 return null;
             }
-            String regex = (anchored ? "" : "(?:.*/)?") + translate(line) + "$";
-            return new Rule(negated, directoryOnly, Pattern.compile(regex));
+            // The path is matched by the segment DP; only the per-segment regexes are compiled here, which is also
+            // where character classes and escapes are understood.
+            return new Rule(negated, directoryOnly, Glob.compile(line, anchored, segment -> translate(segment)));
         }
 
         /** Whether this pattern excludes {@code path} (which is already scoped to its own directory). */
         boolean matches(String path, boolean isDirectory) {
-            if (directoryOnly) {
-                if (isDirectory && pattern.matcher(path).matches()) {
+            return matches(path, path.split("/", -1), isDirectory);
+        }
+
+        /** The same question with the path already split, so a caller deciding many rules splits it once. */
+        boolean matches(String path, String[] segments, boolean isDirectory) {
+            if (!directoryOnly) {
+                return Glob.matches(this.segments, segments, -1);
+            }
+            if (isDirectory && Glob.matches(this.segments, segments, -1)) {
+                return true;
+            }
+            // git reports a file inside an ignored directory as ignored too, so a directory-only pattern matches any
+            // ancestor of the path. The walk prunes before it gets here, and a caller that tests a path on its own gets
+            // the same answer. A segment count is enough: no substring is built per ancestor.
+            for (int count = segments.length - 1; count >= 1; count--) {
+                if (Glob.matches(this.segments, segments, count)) {
                     return true;
                 }
-                // git reports a file inside an ignored directory as ignored too, so a directory-only
-                // pattern matches any ancestor of the path. The walk prunes before it gets here, and a
-                // caller that tests a path on its own gets the same answer.
-                for (int slash = path.indexOf('/'); slash >= 0; slash = path.indexOf('/', slash + 1)) {
-                    if (pattern.matcher(path.substring(0, slash)).matches()) {
-                        return true;
-                    }
-                }
-                return false;
             }
-            return pattern.matcher(path).matches();
+            return false;
         }
 
         /** Trailing spaces are ignored unless they are escaped with a backslash. */
