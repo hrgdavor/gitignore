@@ -88,30 +88,8 @@ for (let index = 0; index < process.argv.length; index += 1) {
   if (process.argv[index] !== '--port') continue;
   const spec = process.argv[index + 1] ?? '';
   const equals = spec.indexOf('=');
-  // `--port "label=command …"` names the row; a bare command uses the executable's own name.
   ports.push(equals > 0 ? { label: spec.slice(0, equals), command: spec.slice(equals + 1) } : { label: null, command: spec });
 }
-/** Split a command line on spaces, honouring single and double quotes: a port may live under a path with spaces. */
-function splitCommand(command) {
-  const parts = [];
-  let current = "";
-  let quote = null;
-  for (const character of command) {
-    if (quote !== null) {
-      if (character === quote) quote = null;
-      else current += character;
-    } else if (character === "\"" || character === "'") {
-      quote = character;
-    } else if (character === " ") {
-      if (current !== "") { parts.push(current); current = ""; }
-    } else {
-      current += character;
-    }
-  }
-  if (current !== "") parts.push(current);
-  return parts;
-}
-
 const repeat_at = process.argv.indexOf('--repeat');
 const repeat = repeat_at >= 0 ? Number(process.argv[repeat_at + 1] ?? 5) : 5;
 
@@ -126,55 +104,86 @@ for (const workload of generated()) {
   console.log(`${workload.name.padEnd(11)} ${String(workload.rules.length).padStart(4)} rules  ${String(workload.paths.length).padStart(5)} paths`);
 }
 
+// An empty path list measures the port's start-up: same command, same rules, nothing to decide.
+const empty_paths = `${out}/empty.paths`;
+writeFileSync(empty_paths, '');
+
 if (emit || ports.length === 0) {
-  console.log(
-    `\nwritten to ${out}/; time a port with --port "<label>=<command> --rules {rules} --paths {paths}", repeated for each port`,
-  );
+  console.log(`\nwritten to ${out}/; time a port with --port "<label>=<command> --rules {rules} --paths {paths}"`);
   process.exit(0);
 }
 
-// One row per workload per port. The measurement is wall time of a process over the whole path list, best of
-// `repeat`, so it includes the port's start-up: that is the number a port's users feel, and it is the same
-// overhead for every row.
-console.log('\n| workload | port | verdicts | best ms | ns/decision |');
-console.log('| -------- | ---- | -------: | ------: | ----------: |');
-const totals = new Map();
-for (const workload of workloads) {
-  for (const port of ports) {
-    const template = splitCommand(port.command);
-    const label = port.label ?? template[0].split(/[\\/]/).pop();
-    let best = Infinity;
-    let verdicts = 0;
-    let failed = false;
-    for (let attempt = 0; attempt < repeat; attempt += 1) {
-      const args = template.map((part) => part.replace('{rules}', workload.rules_path).replace('{paths}', workload.paths_path));
-      const started = performance.now();
-      const result = spawnSync(args[0], args.slice(1), { stdio: ['ignore', 'pipe', 'inherit'] });
-      const elapsed = performance.now() - started;
-      if (result.status !== 0) {
-        console.log(`| ${workload.name} | ${label} | failed (${result.status}) | | |`);
-        failed = true;
-        break;
-      }
-      verdicts = String(result.stdout ?? '').trim().split('\n').filter(Boolean).length;
-      if (verdicts !== workload.paths.length) {
-        console.log(`| ${workload.name} | ${label} | ${verdicts} != ${workload.paths.length} | | |`);
-        failed = true;
-        break;
-      }
-      best = Math.min(best, elapsed);
+/** Split a command line on spaces, honouring quotes: a port may live under a path with spaces. */
+function splitCommand(command) {
+  const parts = [];
+  let current = '';
+  let quote = null;
+  for (const character of command) {
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else current += character;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ' ') {
+      if (current !== '') { parts.push(current); current = ''; }
+    } else {
+      current += character;
     }
-    if (failed) continue;
-    totals.set(label, (totals.get(label) ?? 0) + best);
+  }
+  if (current !== '') parts.push(current);
+  return parts;
+}
+
+/**
+ * Wall time of one process over one path list: the best of `repeat`, and the verdict count the caller must check.
+ * The runner measures a process, so the number includes start-up; that is reported separately and subtracted.
+ */
+function measure(template, rules_path, paths_path, attempts, expected) {
+  let best = Infinity;
+  let verdicts = 0;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const args = template.map((part) => part.replace('{rules}', rules_path).replace('{paths}', paths_path));
+    const started = performance.now();
+    const result = spawnSync(args[0], args.slice(1), { stdio: ['ignore', 'pipe', 'inherit'] });
+    const elapsed = performance.now() - started;
+    if (result.status !== 0) return { failed: `failed (${result.status})` };
+    verdicts = String(result.stdout ?? '').trim().split('\n').filter(Boolean).length;
+    if (expected !== null && verdicts !== expected) return { failed: `${verdicts} != ${expected}` };
+    best = Math.min(best, elapsed);
+  }
+  return { best, verdicts };
+}
+
+console.log('\n| workload | port | verdicts | start-up ms | processing ms | ns/decision |');
+console.log('| -------- | ---- | -------: | ----------: | ------------: | ----------: |');
+const totals = new Map();
+for (const port of ports) {
+  const template = splitCommand(port.command);
+  const label = port.label ?? template[0].split(/[\\/]/).pop();
+  // Start-up: the same process with an empty path list, twice, best of. One rule file is enough; it is parsed either way.
+  const startup = measure(template, workloads[0].rules_path, empty_paths, 2, 0);
+  if (startup.failed !== undefined) {
+    console.log(`| (start-up) | ${label} | ${startup.failed} | | | |`);
+    continue;
+  }
+  totals.set(label, 0);
+  for (const workload of workloads) {
+    const result = measure(template, workload.rules_path, workload.paths_path, repeat, workload.paths.length);
+    if (result.failed !== undefined) {
+      console.log(`| ${workload.name} | ${label} | ${result.failed} | | | |`);
+      continue;
+    }
+    const processing = Math.max(result.best - startup.best, 0);
+    totals.set(label, totals.get(label) + processing);
     console.log(
-      `| ${workload.name} | ${label} | ${verdicts} | ${best.toFixed(1)} | ${((best * 1e6) / workload.paths.length).toFixed(0)} |`,
+      `| ${workload.name} | ${label} | ${result.verdicts} | ${startup.best.toFixed(1)} | ${processing.toFixed(1)} | ${((processing * 1e6) / workload.paths.length).toFixed(0)} |`,
     );
   }
 }
 
-if (ports.length > 1) {
-  console.log('\n| port | total ms over all workloads | vs fastest |');
-  console.log('| ---- | ---------------------------: | ---------: |');
+if (ports.length > 1 && totals.size > 1) {
+  console.log('\n| port | total processing ms | vs fastest |');
+  console.log('| ---- | ------------------: | ---------: |');
   const fastest = Math.min(...totals.values());
   for (const [label, total] of [...totals.entries()].sort((left, right) => left[1] - right[1])) {
     console.log(`| ${label} | ${total.toFixed(1)} | ${(total / fastest).toFixed(2)}x |`);
