@@ -297,8 +297,13 @@ mvn -Ppublish -Dgpg.skip=false deploy # the release
 
 Requirements, learned from a project of this author's that publishes this way (`dia-log`):
 
-- `~/.m2/settings.xml` has a server with id **`central`** (Sonatype token) and one with id **`gpg`** (the signing
-  passphrase, so a headless build never prompts — the profile passes `--pinentry-mode loopback`).
+- `~/.m2/settings.xml` has a server with id **`central`** carrying the Sonatype token.
+- **The signing passphrase comes from `MAVEN_GPG_PASSPHRASE`**, not from `settings.xml`: the plugin deprecates
+  `passphraseServerId` (it warns that a passphrase in a file can leak), and the profile passes
+  `--pinentry-mode loopback` so gpg reads the environment instead of trying to open a prompt that a batch build cannot
+  answer. Measured on this machine: with the variable set, a wrong value produces `gpg: signing failed: Bad passphrase`
+  (proving the passphrase reaches the key); with it unset the agent answers `Operation cancelled`, which is what a GUI-less
+  run looks like. A passphrase stored in `settings.xml` under the old id is ignored now.
 - `gpg.skip` defaults to `true`, so a local build never signs; the release passes `-Dgpg.skip=false`.
 - `central-publishing-maven-plugin` runs with `extensions=true`, which makes it take over `deploy` and suppress the legacy
   `maven-deploy-plugin` (that plugin would push to the old `maven-releases` URL and fail).

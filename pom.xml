@@ -143,7 +143,6 @@
                                 </goals>
                                 <configuration>
                                     <skip>${gpg.skip}</skip>
-                                    <passphraseServerId>gpg</passphraseServerId>
                                     <gpgArguments>
                                         <arg>--pinentry-mode</arg>
                                         <arg>loopback</arg>
