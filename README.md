@@ -182,36 +182,33 @@ Same as `fs-meta`: `LicenseRef-GPL-3.0-with-Commons-Clause`, `Copyright (c) 2026
 Three implementations, the same 34 vectors, the same bytes from `bench/perf.mjs`. Start-up is measured separately (a run
 with an empty path list) and **subtracted**, so the table is the matcher, not the loader:
 
-| workload      | Zig          | JS                    | Java                  |
-| --------      | --:          | -:                    | ---:                  |
-| flat          | 1.1 ms       | 7.1 ms                | 1.1 ms                |
-| deep          | 20.9 ms      | 260.6 ms              | 379.7 ms              |
-| doublestar    | 22.6 ms      | 494.5 ms              | 614.2 ms              |
-| anchored      | 7.6 ms       | 127.3 ms              | 193.8 ms              |
-| dirs          | 2.9 ms       | 29.0 ms               | 3.6 ms                |
-| **backtrack** | **69.0 ms**  | **1640.8 ms**         | **3205.1 ms**         |
-| total         | **124.1 ms** | **2559.3 ms (20.6x)** | **4397.4 ms (35.4x)** |
+| workload      | Zig         | JS (hybrid)           | JS (regex)            | JS (full DP)          |
+| --------      | --:         | ----------:           | ---------:            | -----------:          |
+| flat          | 0.7 ms      | 5.2 ms                | 0.8 ms                | 8.1 ms                |
+| deep          | 17.6 ms     | 115.8 ms              | 111.6 ms              | 241.9 ms              |
+| doublestar    | 23.5 ms     | 120.5 ms              | 75.3 ms               | 494.8 ms              |
+| anchored      | 9.0 ms      | 35.3 ms               | 32.0 ms               | 126.9 ms              |
+| dirs          | 1.9 ms      | 13.7 ms               | 6.1 ms                | 26.4 ms               |
+| **backtrack** | **68.3 ms** | **1370.6 ms**         | **2902.4 ms**         | **1462.6 ms**         |
+| total         | **121 ms**  | **1661.2 ms (13.9x)** | **3128.2 ms (26.1x)** | **2360.7 ms (19.5x)** |
 
-Start-up, for completeness: Zig ~11 ms, JS ~51 ms, Java ~171 ms.
+Start-up, for completeness: Zig ~11 ms, JS ~48 ms, Java ~110 ms.
 
-### The segment DP, and what it did for a port
+The three JS columns are **the same vectors, the same port, three matching strategies**, measured on this machine with
+`--repeat 3` and processing only:
 
-Both ports started with the usual translation of a pattern into a regular expression. On `backtrack` — a `**` pattern
-against a long path — that makes the regex engine try exponentially many splits: JS took **3056 ms** and Java **19671 ms**,
-against Zig's 78 ms.
+- **regex** — one compiled regex per rule. Fast on five workloads, and catastrophic on `backtrack` (2902 ms), where the
+  engine explores exponentially many `**` splits.
+- **full DP** — the segment dynamic program for every rule. The total looks good only because `backtrack` dominates: it is
+  **1.6x-6x slower on the other five rows**, which the first version of this table hid by reporting only the total.
+- **hybrid** — the DP only for patterns containing a `**` segment, the compiled regex for everything else. Best total
+  (1661 ms), `backtrack` down 2.1x, and every other row within ~1.2x of the regex — except `doublestar` (120 vs 75 ms),
+  which is a pattern with `**` where the regex happened to be fast. That row is the open tuning question, not a settled
+  result.
 
-The JS port now uses the same segment dynamic program as Zig (`js/glob.mjs`): `reach[j]` means "the pattern so far
-matches the first j segments", an ordinary segment advances one row, and `**` is an OR over the row. Per-segment regexes
-remain, but against one segment they cannot backtrack across `/`.
-
-- `backtrack`: **3056 ms → 1489 ms** (2.1x faster), total **3286 ms → 2407 ms**.
-- The first version was *slower* than the regex (6558 ms): it split the path per rule and allocated two arrays per pattern
-  segment. Splitting once per decision and reusing two scratch rows is what turned it into a win. **In JS the allocation
-  was the cost, not the comparison** — a lesson that transfers to any port tempted to copy the algorithm without the
-  buffer discipline.
-
-The Java port still carries the regex translation, which is why its `backtrack` is 17599 ms. It is the obvious next port
-to change, and it needs no new idea: the same DP, the same two rows, measured by the same table.
+The Java port still runs the full DP (4397 ms total, `backtrack` 3205 ms, `anchored` and `doublestar` regressed against its
+regex version). The same hybrid applies to it and is the next step; the numbers above are why it should be measured per
+workload rather than by the total.
 
 ### Two caveats
 

@@ -148,9 +148,16 @@ function parseRule(rawLine) {
   return {
     negated,
     directoryOnly,
-    // The path is matched by the segment DP (see glob.mjs); only the per-segment regexes are compiled here, which is
-    // also where classes and escapes are understood.
-    segments: compileSegments(line, anchored, translateGlob),
+    // Both anchors are required: Java's `Matcher.matches()` anchors the whole pattern, while JavaScript's
+    // `RegExp.test` searches — and a missing `^` lets an anchored pattern match a path *suffix*. That one
+    // difference is what the ignore vector `anchored-pattern` caught between the two ports.
+    //
+    // Only a pattern with a `**` segment needs the DP: that is the construct that makes a regex back-track
+    // exponentially. Everything else is faster as one compiled regex, so it keeps one.
+    pattern: line.split('/').includes('**')
+      ? null
+      : new RegExp(`^${anchored ? '' : '(?:.*/)?'}${translateGlob(line)}$`),
+    segments: line.split('/').includes('**') ? compileSegments(line, anchored, translateGlob) : null,
   };
 }
 
@@ -220,6 +227,22 @@ export function parseGitignore(relativeDirectory, text) {
 }
 
 function matches(rule, path, isDirectory, text = null) {
+  if (rule.segments === null) {
+    // No `**`: the compiled regex is both correct and faster (see the A/B in conformance/findings-js.md).
+    if (!rule.directoryOnly) {
+      return rule.pattern.test(path);
+    }
+    if (isDirectory && rule.pattern.test(path)) {
+      return true;
+    }
+    for (let slash = path.indexOf('/'); slash >= 0; slash = path.indexOf('/', slash + 1)) {
+      if (rule.pattern.test(path.slice(0, slash))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Split once per decision, not once per rule: `text` arrives from the caller that already has it.
   const segments = text ?? path.split('/');
   if (!rule.directoryOnly) {
