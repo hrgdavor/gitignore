@@ -120,9 +120,11 @@ public final class GitIgnoreFile {
         if (scoped == null) {
             return Optional.empty();
         }
+        // One split per decision: the array is the same for every rule, and a file with 8 rules used to split 8 times.
+        String[] parts = scoped.split("/", -1);
         for (int index = rules.size() - 1; index >= 0; index--) {
             Rule rule = rules.get(index);
-            if (rule.matches(scoped, isDirectory)) {
+            if (rule.matches(scoped, parts, isDirectory)) {
                 return Optional.of(!rule.negated());
             }
         }
