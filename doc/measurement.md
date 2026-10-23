@@ -17,23 +17,30 @@ The cold mode is the honest end-to-end number for a CLI. It is also why the same
 3205 ms and 5129 ms on consecutive runs, and why the small workloads (a few ms, obtained by subtracting a ~110 ms start-up)
 should not be compared to one decimal place.
 
-## Steady state, 12 rounds, one process each (processing only)
+## Steady state, 12 rounds, one process each
 
-Per round, divided by 12:
+All three CLIs accept `--rounds N`: they repeat the decision loop inside one process and print one verdict per path, so the
+number below is 12 rounds together and steady state is a twelfth of it. Processing only; start-up is measured separately
+and subtracted, as always.
 
-| workload      | JS            | Java         |
-| --------      | -:            | ---:         |
-| flat          | 2.0 ms        | 8.7 ms       |
-| deep          | 99.6 ms       | 177.0 ms     |
-| doublestar    | 91.9 ms       | 307.7 ms     |
-| anchored      | 22.1 ms       | 78.0 ms      |
-| dirs          | 5.8 ms        | 12.9 ms      |
-| **backtrack** | **1546.0 ms** | **892.6 ms** |
-| total         | 1767.3 ms     | 1476.9 ms    |
+| workload      | Zig           | JS                     | Java                   |
+| --------      | --:           | -:                     | ---:                   |
+| flat          | 10.0 ms       | 44.9 ms                | 77.5 ms                |
+| deep          | 112.3 ms      | 1225.5 ms              | 1504.1 ms              |
+| doublestar    | 149.3 ms      | 1067.1 ms              | 2328.0 ms              |
+| anchored      | 29.4 ms       | 247.1 ms               | 562.2 ms               |
+| dirs          | 9.3 ms        | 64.2 ms                | 65.4 ms                |
+| **backtrack** | **796.9 ms**  | **16360.8 ms**         | **7867.8 ms**          |
+| total         | **1107.1 ms** | **19009.7 ms (17.2x)** | **12405.0 ms (11.2x)** |
 
-JS is faster on five workloads; Java wins the one that dominates the total. That is the same shape as the JS port's own
-history: a regex translation is faster everywhere until a pattern with several `**` segments makes it explore
-exponentially many splits.
+Per round: Zig **92 ms**, Java **1034 ms**, JS **1584 ms**.
+
+Two things this table settles that the cold one could not:
+
+- **Java is the faster port**, and it wins the workload that dominates the total (`backtrack`: 656 ms per round against JS's
+  1363). That reverses the cold-process ordering, which is how much JIT warm-up was in the earlier numbers.
+- The regex translation is not a JS-only problem: with Java on the DP for every pattern, its `doublestar` (194 ms per
+  round) is **twice** the regex-shaped JS one, which is evidence for the criterion below.
 
 ## What was tried on the Java port, and what each one did
 
@@ -53,10 +60,10 @@ cost; allocating a `Matcher` (Java) or two arrays (JS) per decision was.
 
 ## What is still open
 
-- The unmeasured criterion above: two-or-more `**` wins on paper (the `backtrack` workload's worst pattern has three, and a
-  single `**` is what `doublestar` has), but the edit that would have shown it was broken and reverted rather than guessed
-  at.
-- The Zig reference has no `--rounds` mode, so the three-way table mixes a cold Zig with steady-state ports. A fair
-  three-way comparison needs the same mode on all three.
+- The unmeasured criterion above is the biggest known win: DP for a pattern with two or more `**` segments, or for a
+  directory-only rule, and the compiled regex otherwise. The workloads support it (`backtrack`'s worst pattern has three,
+  `doublestar`'s have one at most), but the edit that would have measured it broke `decide` and was reverted rather than
+  guessed at.
+- Per-rule `Matcher` reuse for the regex branch: `pattern.matcher(path)` allocates, and a rule answers once per path.
 - Neither port has the Zig implementation's per-chain indexing, which is the next idea worth copying — and the first one
   that would show up in the small workloads rather than in `backtrack`.

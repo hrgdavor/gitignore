@@ -86,6 +86,7 @@ pub fn main(init: std.process.Init) !void {
     var dirs_path: ?[]const u8 = null;
     var root_path: ?[]const u8 = null;
     var naive_flag = false;
+    var rounds: u32 = 1;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--rules")) {
             rules_path = args.next() orelse fail(io, gpa, "--rules needs a file");
@@ -97,6 +98,10 @@ pub fn main(init: std.process.Init) !void {
             root_path = args.next() orelse fail(io, gpa, "--root needs a directory");
         } else if (std.mem.eql(u8, arg, "--naive")) {
             naive_flag = true;
+        } else if (std.mem.eql(u8, arg, "--rounds")) {
+            const given = args.next() orelse fail(io, gpa, "--rounds needs a count");
+            rounds = std.fmt.parseInt(u32, given, 10) catch fail(io, gpa, "--rounds needs a count");
+            if (rounds == 0) rounds = 1;
         } else {
             fail(io, gpa, "unknown option (only --rules, --paths, --dirs, --root and --naive are accepted)");
         }
@@ -177,10 +182,15 @@ pub fn main(init: std.process.Init) !void {
             dir_flags.items[0] == '1'
         else
             dir_flags.items[index] == '1';
-        const verdict = if (naive)
-            try stack.decideNaive(path, is_dir)
-        else
-            try stack.decide(path, is_dir);
+        // `--rounds N` repeats the decision N times and prints one verdict, so a measurement can be steady state.
+        var verdict: ?bool = null;
+        var repeat: u32 = 0;
+        while (repeat < rounds) : (repeat += 1) {
+            verdict = if (naive)
+                try stack.decideNaive(path, is_dir)
+            else
+                try stack.decide(path, is_dir);
+        }
         try out.appendSlice(gpa, verdictName(verdict));
         try out.append(gpa, '\n');
     }
