@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        RELEASE ENTRY POINT - not the normal build.
+
+        This is a copy of pom.xml, not a child of it: pom.xml packages a jar, and Maven 3.9.9 refuses a
+        jar-packaged POM as a parent ("Invalid packaging for parent POM ... must be 'pom' but is 'jar'").
+        Maven also has no POM include, so the POM is duplicated. The intended differences are this comment
+        block and the Central publisher plugin in the top-level <build> below, which pom.xml deliberately does
+        not carry. maven.deploy.skip stays true here too: it disables maven-deploy-plugin, not the publisher
+        (a separate goal at the same phase), so if the publisher extension ever failed to load, a release
+        would do nothing rather than fall back to a direct deploy. scripts/check-poms.mjs strips comments,
+        removes the publisher plugin from this file, and fails if the two POMs are not otherwise identical -
+        so a change to pom.xml must be copied here in the same commit.
+
+        Release (real Maven, not mvnd):
+
+            .tmp\maven\apache-maven-3.9.9\bin\mvn.cmd -f pom-release.xml -Ppublish -Dgpg.skip=false -DskipTests deploy
+
+        Never test this POM by running deploy without a skip: pass -DskipPublishing=true (the publisher's own
+        parameter, default false), which still proves the release path reaches the publisher without uploading.
+    -->
+
+    <!--
+        THE MATCHER AS A REUSABLE ARTIFACT — the Java half of `@hrg/gitignore`.
+
+        `hr.hrg:gitignore` is the core dependency for everything that needs `.gitignore` or `wildmatch`
+        semantics. It is consumed exactly as `hr.hrg:wyhash` is: a released artifact, or a local
+        repository install (`mvn install`) while iterating. No consumer may carry a copy of these classes.
+
+        SOURCES. The matcher lives in `java/src/hr/hrg/gitignore`, laid out as a plain package tree because
+        `bun java/run.mjs` compiles it with bare `javac` against `conformance/gitignore-vectors.json` — no
+        Maven and no JUnit needed to say "34/34". This POM therefore points `<sourceDirectory>` there and
+        includes only the matcher itself:
+
+          * `GitIgnoreFile` and `GitIgnoreRules` are the public API;
+          * `Glob` is package-private and is the segment DP they use.
+
+        `Runner`, `Decide` and `Json` in the same directory are the vector/benchmark harness, not library
+        code: `Runner` has the `main` the vectors run, `Decide` the benchmark CLI, `Json` their parser. They
+        are deliberately NOT compiled into this jar — the artifact is only the matcher.
+
+        DEPENDENCIES. The matcher imports `java.util`, `java.util.regex`, `java.nio.file` and
+        `java.nio.charset` — the JDK only. This POM declares no dependency, deliberately.
+    -->
+
+    <groupId>hr.hrg</groupId>
+    <artifactId>gitignore</artifactId>
+    <version>0.3.0</version>
+    <packaging>jar</packaging>
+
+    <name>gitignore</name>
+    <description>
+        git's .gitignore (wildmatch) semantics, one implementation per language and shared conformance
+        vectors: a file's patterns apply below its directory, the last matching pattern wins, a deeper file
+        beats a shallower one, a trailing slash means directories only, and matching is case-sensitive on
+        every platform.
+    </description>
+    <url>https://github.com/hrgdavor/gitignore</url>
+
+    <licenses>
+        <license>
+            <name>GPL-3.0 with the Commons Clause</name>
+            <url>https://github.com/hrgdavor/gitignore</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>hrgdavor</id>
+            <name>Davor Hrg</name>
+            <url>https://github.com/hrgdavor</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/hrgdavor/gitignore.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com:hrgdavor/gitignore.git</developerConnection>
+        <url>https://github.com/hrgdavor/gitignore</url>
+    </scm>
+
+    <properties>
+        <maven.source.plugin.version>3.3.1</maven.source.plugin.version>
+        <maven.javadoc.plugin.version>3.11.2</maven.javadoc.plugin.version>
+        <maven.gpg.plugin.version>3.2.7</maven.gpg.plugin.version>
+        <central.publishing.plugin.version>0.6.0</central.publishing.plugin.version>
+        <!-- Signing is off by default so local builds never wait on a passphrase; a release passes -Dgpg.skip=false. -->
+        <gpg.skip>true</gpg.skip>
+        <!--
+            PUBLISHING GUARD, RELEASE HALF. pom.xml has no publisher and sets maven.deploy.skip=true, so a
+            normal build never loads the extension and a bare `mvn deploy` is a no-op. This release copy adds
+            the publisher below but keeps maven.deploy.skip=true: the skip disables maven-deploy-plugin, not
+            the Central publisher, which is a separate goal at the same phase. If the publisher extension
+            failed to load, the release would therefore do nothing instead of uploading directly.
+        -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>25</maven.compiler.release>
+
+        <maven.compiler.plugin.version>3.11.0</maven.compiler.plugin.version>
+        <maven.jar.plugin.version>3.3.0</maven.jar.plugin.version>
+        <maven.install.plugin.version>3.1.4</maven.install.plugin.version>
+        <maven.deploy.plugin.version>3.1.2</maven.deploy.plugin.version>
+    </properties>
+
+    <build>
+        <sourceDirectory>java/src</sourceDirectory>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven.compiler.plugin.version}</version>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                    <includes>
+                        <include>hr/hrg/gitignore/GitIgnoreFile.java</include>
+                        <include>hr/hrg/gitignore/GitIgnoreRules.java</include>
+                        <include>hr/hrg/gitignore/Glob.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>${maven.jar.plugin.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <version>${maven.install.plugin.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-deploy-plugin</artifactId>
+                <version>${maven.deploy.plugin.version}</version>
+            </plugin>
+            <!--
+                The Central publisher. It is here, in the top-level <build> of the release POM, because Maven
+                reads <extensions> only from the build and never from a profile: declared in the publish
+                profile it was silently never loaded, and `deploy` staged a bundle without uploading it or
+                saying "central". It takes over deploy and suppresses maven-deploy-plugin, and it is a separate
+                goal at the same phase, so maven.deploy.skip=true above does not stop it - it stops the plugin
+                that would otherwise upload a non-bundle directly.
+                skipPublishing is left at the plugin's default (false). Pass -DskipPublishing=true to exercise
+                this path without uploading.
+            -->
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>${central.publishing.plugin.version}</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>true</autoPublish>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+    <profiles>
+        <profile>
+            <id>publish</id>
+            <build>
+                <plugins>
+                    <!-- Central requires a sources jar and a javadoc jar next to the binary. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>${maven.source.plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>${maven.javadoc.plugin.version}</version>
+                        <configuration>
+                            <doclint>none</doclint>
+                            <additionalOptions>
+                                <additionalOption>--no-fonts</additionalOption>
+                            </additionalOptions>
+                            <source>${maven.compiler.release}</source>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!-- Signing: skipped unless -Dgpg.skip=false. The passphrase comes from the settings.xml server named
+                         "gpg", so a headless build never waits on a prompt. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>${maven.gpg.plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${gpg.skip}</skip>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+    <distributionManagement>
+        <snapshotRepository>
+            <id>central</id>
+            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+        </snapshotRepository>
+        <repository>
+            <id>central</id>
+            <url>https://central.sonatype.com/repository/maven-releases/</url>
+        </repository>
+    </distributionManagement>
+
+</project>

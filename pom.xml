@@ -70,6 +70,16 @@
         <central.publishing.plugin.version>0.6.0</central.publishing.plugin.version>
         <!-- Signing is off by default so local builds never wait on a passphrase; a release passes -Dgpg.skip=false. -->
         <gpg.skip>true</gpg.skip>
+        <!--
+            PUBLISHING GUARD. The Central publisher lives in pom-release.xml, not here: its <extensions> is
+            read only from a top-level <build>, and keeping it out of pom.xml means a normal build never loads
+            it. maven.deploy.skip=true is the second half of the guard: maven-deploy-plugin is bound to the
+            deploy phase, so without it `mvn deploy` would upload to the distributionManagement URL in this POM.
+            It stays true in pom-release.xml as well, because that skips maven-deploy-plugin, not the Central
+            publisher (a separate goal at the same phase): a release therefore cannot fall back to a direct
+            deploy if the publisher extension ever fails to load. See pom-release.xml.
+        -->
+        <maven.deploy.skip>true</maven.deploy.skip>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
 
@@ -110,21 +120,15 @@
                 <artifactId>maven-deploy-plugin</artifactId>
                 <version>${maven.deploy.plugin.version}</version>
             </plugin>
-            <!-- The Central publisher MUST be at the top level: Maven reads <extensions> only from the build, never from a
-                 profile. Declared in the publish profile it was silently never loaded, so `deploy` staged the bundle and
-                 stopped - no upload, no "central" in the log. It takes over deploy and suppresses the legacy deploy plugin;
-                 that is why direct deployment to maven-releases is not an alternative (it uploads, then fails verification,
-                 because the Portal expects a bundle). -->
-            <plugin>
-                <groupId>org.sonatype.central</groupId>
-                <artifactId>central-publishing-maven-plugin</artifactId>
-                <version>${central.publishing.plugin.version}</version>
-                <extensions>true</extensions>
-                <configuration>
-                    <publishingServerId>central</publishingServerId>
-                    <autoPublish>true</autoPublish>
-                </configuration>
-            </plugin>
+            <!--
+                The Central publisher is deliberately NOT here. It lives in pom-release.xml, in that POM's
+                top-level <build>, because Maven reads <extensions> only from the build and never from a
+                profile: declared in the publish profile it was silently never loaded, and `deploy` staged a
+                bundle without uploading it or saying "central". It must also not be in pom.xml's <build>,
+                because then every build would load it and a bare `mvn deploy` would publish by default.
+                maven.deploy.skip=true above makes a bare `mvn deploy` a no-op instead; pom-release.xml keeps
+                that skip and adds the publisher.
+            -->
         </plugins>
     </build>
     <profiles>

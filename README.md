@@ -127,9 +127,10 @@ Steps 1–6 of [`plans/next-steps.md`](plans/next-steps.md) are implemented:
 - the corpus generator is [`conformance/from-git-check-ignore.mjs`](conformance/from-git-check-ignore.mjs), a
   separate step because it needs a checkout CI will not have.
 
-What remains is **publishing** (step 7), scheduled for **0.3.0**: [Publishing](#publishing) is the checklist, and once
-the version is on the registry, `fs-meta`'s path dependency (`../gitignore` in its `build.zig.zon`, `file:` in its
-`package.json`) becomes a version range, the way `hr.hrg:wyhash` is consumed. The Java and JS
+**0.3.0** is released — the same version on npm (`@hrg/gitignore`) and Maven Central (`hr.hrg:gitignore`):
+[Publishing](#publishing) records the release commands. `fs-meta`'s path dependency (`../gitignore` in its
+`build.zig.zon`, `file:` in its `package.json`) can therefore become a version range, the way `hr.hrg:wyhash` is
+consumed. The Java and JS
 ports still consume the vectors and the bench rather than re-deriving them, and a `bench/compare.mjs` that runs
 several ports in one table is a convenience, not a contract.
 
@@ -200,8 +201,8 @@ The package is `package.json` here (`"type": "module"`, `"sideEffects": false`, 
 ```
 
 `pom.xml` builds the three matcher classes — `GitIgnoreFile`, `GitIgnoreRules` and the package-private `Glob` —
-with JDK 25. `bun java/run.mjs` remains the zero-build gate for the port. Until `0.3.0` is published, a machine
-needs the checkout installed once into the local repository:
+with JDK 25. `bun java/run.mjs` remains the zero-build gate for the port. A checkout can also be installed into the
+local repository once:
 
 ```text
 cd gitignore
@@ -288,15 +289,60 @@ bun bench/perf.mjs --repeat 3 \
 ```
 ## Publishing the Maven artifact
 
-The `publish` profile carries everything Central requires, and nothing is added to the normal build:
+The release is **0.3.0**, the same version as `build.zig.zon` and `package.json`. Publishing is deliberate now:
+the Central publisher lives only in [`pom-release.xml`](pom-release.xml), and `pom.xml` has no publisher at all.
 
-**DO NOT USE MVND**, use mvn
+### Why the publisher is not in `pom.xml`, and never in a profile
+
+Maven reads `<extensions>true</extensions>` only from a POM's **top-level `<build>`**, never from a profile. The
+publisher was once declared in the `publish` profile; it silently never loaded, so `deploy` staged a bundle and
+stopped — no upload, and not a word about "central" in the log. That is the failure this layout prevents.
+
+Declaring it in `pom.xml`'s top-level `<build>` does load it, but then *every* build loads it and a bare
+`mvn deploy` publishes to Central whether or not `-Ppublish` was passed. So the publisher is kept out of `pom.xml`
+entirely and exists only in `pom-release.xml`, in that POM's top-level `<build>`.
+
+The guard has two halves:
+
+- `pom.xml` sets `maven.deploy.skip=true`. `mvn deploy` on it reaches `maven-deploy-plugin` and logs
+  `Skipping artifact deployment`; it uploads nothing, and the publisher is not on the build's classpath at all.
+- `pom-release.xml` is a copy of `pom.xml` plus the publisher. It keeps `maven.deploy.skip=true` too: that property
+  disables `maven-deploy-plugin`, **not** the Central publisher, which is a separate goal at the same phase. If the
+  extension ever failed to load, the release would do nothing rather than fall back to a direct deploy. Verified with
+  the plugin: with `maven.deploy.skip=true`, `central-publishing:0.6.0:publish` still runs and logs
+  `Skipping Central Publishing at user's request.` when `-DskipPublishing=true` is passed.
+
+`pom-release.xml` is a **copy**, not a child: Maven 3.9.9 rejects a jar-packaged POM as a parent
+(`Invalid packaging for parent POM ... must be "pom" but is "jar"`), and Maven has no POM include. Everything is
+duplicated; only the comment block and the publisher plugin are meant to differ. [`scripts/check-poms.mjs`](scripts/check-poms.mjs)
+strips comments, removes the publisher, and fails if anything else differs; it also asserts that both POMs declare the
+same version. Run `bun scripts/check-poms.mjs` after editing either POM, and copy `pom.xml` again in the same commit.
+
+### The release command
+
+**On this machine `mvn` is `mvnd` (native mode), not the real Maven, and it refuses `-Dmvnd.noDaemon`.** Releasing uses
+the unpacked real Maven in `.tmp/maven/` (Maven 3.9.9), with JDK 25:
 
 ```text
+$env:JAVA_HOME = 'C:\Program Files\Java\jdk-25'
 $env:MAVEN_GPG_PASSPHRASE = '<your passphrase>'
-mvn -Ppublish -DskipTests package     # check: binary + sources + javadoc jars all appear in target/
-mvn -Ppublish -Dgpg.skip=false deploy # the release
+.tmp\maven\apache-maven-3.9.9\bin\mvn.cmd -f pom-release.xml -Ppublish -DskipTests package
+.tmp\maven\apache-maven-3.9.9\bin\mvn.cmd -f pom-release.xml -Ppublish -Dgpg.skip=false -DskipTests deploy
 ```
+
+The first command checks that the binary, sources and javadoc jars all appear in `target/`; the second is the release.
+`-Ppublish` adds `maven-source-plugin`, `maven-javadoc-plugin` and `maven-gpg-plugin` (the profile is in both POMs).
+`gpg.skip` defaults to `true`, so nothing signs unless `-Dgpg.skip=false` is passed.
+
+To exercise the release path **without uploading**, pass the publisher's own switch:
+
+```text
+.tmp\maven\apache-maven-3.9.9\bin\mvn.cmd -f pom-release.xml -DskipTests -DskipPublishing=true deploy
+```
+
+That runs `central-publishing:0.6.0:publish`, stages and bundles locally, logs
+`Skipping Central Publishing at user's request.`, and stops before the upload. **Do not** prove the release path with a
+bare `deploy`.
 
 Requirements, learned from a project of this author's that publishes this way (`dia-log`):
 
@@ -308,14 +354,11 @@ Requirements, learned from a project of this author's that publishes this way (`
   (proving the passphrase reaches the key); with it unset the agent answers `Operation cancelled`, which is what a GUI-less
   run looks like. A passphrase stored in `settings.xml` under the old id is ignored now.
 - `gpg.skip` defaults to `true`, so a local build never signs; the release passes `-Dgpg.skip=false`.
-- Deployment goes through `maven-deploy-plugin` and the `distributionManagement` above (Sonatype's `maven-releases`
-  endpoint), **not** through `central-publishing-maven-plugin`. The publisher was tried first and removed: with
-  `extensions=true` it hijacks the `deploy` phase, and under the mvnd daemon its goal never executed — a deploy staged the
-  bundle and stopped, with no upload and not a word about "central" in the log. The standard plugin is the phase actually
-  visible in the log, and Sonatype accepts direct deployment to that endpoint with a token in the server named `central`.
-- The old publisher line was: `central-publishing-maven-plugin` runs with `extensions=true`, which makes it take over `deploy` and suppress the legacy
-  `maven-deploy-plugin` (that plugin would push to the old `maven-releases` URL and fail).
-- The version comes from the pom (`0.3.0`), and `build.zig.zon`/`package.json` must agree — they do.
+- The Central publisher takes over the `deploy` phase and suppresses `maven-deploy-plugin`, so the
+  `distributionManagement` in both POMs (Sonatype's `maven-releases` endpoint) is not a second upload path. The
+  publisher uses `skipPublishing` to stop before the upload and the `central` server for credentials; it does **not**
+  use `altDeploymentRepository`.
+- The version comes from the POM (`0.3.0`), and `build.zig.zon`/`package.json` must agree — they do.
 
 Afterwards, `fs-meta` resolves `hr.hrg:gitignore` from the repository like any other artifact; it no longer needs the local
 `mvn install`.
