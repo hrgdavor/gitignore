@@ -286,3 +286,23 @@ bun bench/perf.mjs --repeat 3 \
   --port "js=bun js/decide.mjs --rules {rules} --paths {paths}" \
   --port "java=\"…\bin\java.exe\" -cp java/out hr.hrg.gitignore.Decide --rules {rules} --paths {paths}"
 ```
+## Publishing the Maven artifact
+
+The `publish` profile carries everything Central requires, and nothing is added to the normal build:
+
+```text
+mvn -Ppublish -DskipTests package     # check: binary + sources + javadoc jars all appear in target/
+mvn -Ppublish -Dgpg.skip=false deploy # the release
+```
+
+Requirements, learned from a project of this author's that publishes this way (`dia-log`):
+
+- `~/.m2/settings.xml` has a server with id **`central`** (Sonatype token) and one with id **`gpg`** (the signing
+  passphrase, so a headless build never prompts — the profile passes `--pinentry-mode loopback`).
+- `gpg.skip` defaults to `true`, so a local build never signs; the release passes `-Dgpg.skip=false`.
+- `central-publishing-maven-plugin` runs with `extensions=true`, which makes it take over `deploy` and suppress the legacy
+  `maven-deploy-plugin` (that plugin would push to the old `maven-releases` URL and fail).
+- The version comes from the pom (`0.3.0`), and `build.zig.zon`/`package.json` must agree — they do.
+
+Afterwards, `fs-meta` resolves `hr.hrg:gitignore` from the repository like any other artifact; it no longer needs the local
+`mvn install`.
