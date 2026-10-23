@@ -19,7 +19,6 @@ const ignore = @import("ignore.zig");
 const testing = std.testing;
 
 /// The vectors, which live beside `src/` in the project this test belongs to.
-const vectors_path = "D:/wrk/java/jcodebuddy/gitignore/conformance/gitignore-vectors.json";
 
 /// One field of a JSON object, with the two failure modes named instead of panicking.
 fn field(value: std.json.Value, name: []const u8) !std.json.Value {
@@ -38,8 +37,10 @@ fn verdictName(verdict: ?bool) []const u8 {
 test "every conformance vector answers as it expects" {
     const io = testing.io;
 
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, vectors_path, testing.allocator, std.Io.Limit.limited(1 << 20));
-    defer testing.allocator.free(bytes);
+    // Embedded through the build: `build.zig` registers the vectors as the anonymous import "vectors.json" (and
+    // `-Dvectors=<file>` swaps it), so the test carries its own input and cannot be run against a stale file on
+    // disk. It also means the file works from any checkout, which a runtime path never did.
+    const bytes = @embedFile("vectors.json");
 
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bytes, .{});
     defer parsed.deinit();
