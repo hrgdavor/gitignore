@@ -290,6 +290,8 @@ bun bench/perf.mjs --repeat 3 \
 
 The `publish` profile carries everything Central requires, and nothing is added to the normal build:
 
+DO NOT USE MVND
+
 ```text
 $env:MAVEN_GPG_PASSPHRASE = '<your passphrase>'
 mvn -Ppublish -DskipTests package     # check: binary + sources + javadoc jars all appear in target/

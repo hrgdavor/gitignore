@@ -39,6 +39,29 @@
         beats a shallower one, a trailing slash means directories only, and matching is case-sensitive on
         every platform.
     </description>
+    <url>https://github.com/hrgdavor/gitignore</url>
+
+    <licenses>
+        <license>
+            <name>GPL-3.0 with the Commons Clause</name>
+            <url>https://github.com/hrgdavor/gitignore</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>hrgdavor</id>
+            <name>Davor Hrg</name>
+            <url>https://github.com/hrgdavor</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/hrgdavor/gitignore.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com:hrgdavor/gitignore.git</developerConnection>
+        <url>https://github.com/hrgdavor/gitignore</url>
+    </scm>
 
     <properties>
         <maven.source.plugin.version>3.3.1</maven.source.plugin.version>
