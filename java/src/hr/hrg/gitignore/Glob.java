@@ -19,14 +19,22 @@ final class Glob {
     private Glob() {
     }
 
-    /** One pattern segment: either the `**` wildcard or a regular expression that matches a single path segment. */
-    record Segment(boolean doubleStar, Pattern regex) {
+    /**
+     * One pattern segment: the `**` wildcard, a literal string, or a regular expression for a segment with wildcards.
+     *
+     * <p>A literal segment is the common case — most rules are a name, not a pattern — and comparing two strings is both
+     * cheaper than compiling and running a Matcher, and the reason this class does not allocate one per test.
+     */
+    record Segment(boolean doubleStar, Pattern regex, String literal) {
         static Segment wildcard() {
-            return new Segment(true, null);
+            return new Segment(true, null, null);
         }
 
-        static Segment of(Pattern regex) {
-            return new Segment(false, regex);
+        static Segment of(String segment, java.util.function.Function<String, String> translate) {
+            // A segment with no wildcard character can only match itself; escaping a wildcard makes it literal too, and
+            // that case is rare enough to take the regex path.
+            boolean plain = segment.indexOf('*') < 0 && segment.indexOf('?') < 0 && segment.indexOf('[') < 0 && segment.indexOf('\\') < 0;
+            return plain ? new Segment(false, null, segment) : new Segment(false, Pattern.compile(translate.apply(segment)), null);
         }
     }
 
@@ -45,7 +53,7 @@ final class Glob {
             segments.add(Segment.wildcard());
         }
         for (String part : parts) {
-            segments.add(part.equals("**") ? Segment.wildcard() : Segment.of(Pattern.compile(translate.apply(part))));
+            segments.add(part.equals("**") ? Segment.wildcard() : Segment.of(part, translate));
         }
         return segments.toArray(new Segment[0]);
     }
@@ -99,6 +107,14 @@ final class Glob {
                     }
                     if (!last) {
                         next[position] = any;
+                    }
+                }
+            } else if (segment.literal() != null) {
+                // The literal fast path: no Matcher allocation for the segment that is just a name.
+                String literal = segment.literal();
+                for (int position = 0; position < limit; position++) {
+                    if (reach[position] && literal.equals(text[position])) {
+                        next[position + 1] = true;
                     }
                 }
             } else {

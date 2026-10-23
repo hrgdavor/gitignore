@@ -1,10 +1,15 @@
 // The Java port's bench CLI: the same contract as the Zig and JS ones, so the runner times all three on identical bytes.
 //
-//   java -cp <classes> hr.hrg.gitignore.Decide --rules <file.gitignore> --paths <file.paths> [--dirs <file>]
+//   java -cp <classes> hr.hrg.gitignore.Decide --rules <file.gitignore> --paths <file.paths> [--dirs <file>] [--rounds N]
 //
 // One verdict per line on stdout, in input order: include | exclude | no-opinion. The stack is built once and the output
 // is collected before it is written, because the runner times a process and a syscall per line would be the thing it
 // measured.
+//
+// `--rounds N` repeats the whole decision loop N times inside one JVM and prints the verdicts once. It exists because a
+// process-per-measurement run measures JIT warm-up as much as the matcher: the same build varied by 60% between runs on
+// the small workloads, which is wider than any change worth making. With N rounds the measurement is steady-state and
+// can be divided by N.
 package hr.hrg.gitignore;
 
 import java.io.IOException;
@@ -22,11 +27,13 @@ public final class Decide {
         String rules = null;
         String paths = null;
         String dirs = null;
+        int rounds = 1;
         for (int index = 0; index < args.length; index++) {
             switch (args[index]) {
                 case "--rules" -> rules = args[++index];
                 case "--paths" -> paths = args[++index];
                 case "--dirs" -> dirs = args[++index];
+                case "--rounds" -> rounds = Integer.parseInt(args[++index]);
                 default -> usage("unexpected argument: " + args[index]);
             }
         }
@@ -42,27 +49,38 @@ public final class Decide {
                 names.add(line);
             }
         }
+        boolean[] isDirectory = new boolean[names.size()];
+        for (int index = 0; index < names.size(); index++) {
+            isDirectory[index] = flags != null && (flags.length() == 1 ? flags.equals("1") : flags.charAt(index) == '1');
+        }
 
+        // Outside the loop: parsing rules is a per-run cost, not a per-decision one, in every port.
         GitIgnoreRules stack = new GitIgnoreRules();
         stack.push(GitIgnoreFile.parse("", ruleText));
 
         StringBuilder out = new StringBuilder(names.size() * 8);
-        for (int index = 0; index < names.size(); index++) {
-            boolean isDirectory = flags != null && (flags.length() == 1 ? flags.equals("1") : flags.charAt(index) == '1');
-            var decision = stack.decide(names.get(index), isDirectory);
-            if (decision.isEmpty()) {
-                out.append("no-opinion");
-            } else {
-                out.append(decision.get() ? "exclude" : "include");
+        for (int round = 0; round < rounds; round++) {
+            if (round == 0) {
+                out.setLength(0);
             }
-            out.append('\n');
+            for (int index = 0; index < names.size(); index++) {
+                var decision = stack.decide(names.get(index), isDirectory[index]);
+                if (round == 0) {
+                    if (decision.isEmpty()) {
+                        out.append("no-opinion");
+                    } else {
+                        out.append(decision.get() ? "exclude" : "include");
+                    }
+                    out.append('\n');
+                }
+            }
         }
         System.out.print(out);
     }
 
     private static void usage(String message) {
         System.err.println(message);
-        System.err.println("usage: Decide --rules <file.gitignore> --paths <file.paths> [--dirs <file>]");
+        System.err.println("usage: Decide --rules <file.gitignore> --paths <file.paths> [--dirs <file>] [--rounds N]");
         System.exit(1);
     }
 }

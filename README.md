@@ -210,6 +210,12 @@ The Java port still runs the full DP (4397 ms total, `backtrack` 3205 ms, `ancho
 regex version). The same hybrid applies to it and is the next step; the numbers above are why it should be measured per
 workload rather than by the total.
 
+### How these numbers are produced
+
+Cold-process runs, with start-up measured separately and subtracted. That is the honest number for a CLI and it is
+also noisy: the same Java build has reported `backtrack` at 3205 ms and 5129 ms. [+doc/measurement.md](doc/measurement.md)](doc/measurement.md) records the two measurement modes, the steady-state table (12 rounds inside one process) and every
+strategy tried on the Java port with what it cost. The Java column above predates the literal-segment fast path.
+
 ### Two caveats
 
 - The runner measures a process; the start-up column is a subtraction, and on a loaded machine it is a noisy one. The
