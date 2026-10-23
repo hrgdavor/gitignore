@@ -1,0 +1,17 @@
+{
+  "name": "@hrg/gitignore",
+  "version": "0.2.0",
+  "description": "git's .gitignore (wildmatch) semantics: one matcher, shared by the Zig, JavaScript and Java ports.",
+  "type": "module",
+  "exports": {
+    ".": "./js/gitignore.mjs",
+    "./glob": "./js/glob.mjs"
+  },
+  "files": [
+    "js/gitignore.mjs",
+    "js/glob.mjs"
+  ],
+  "scripts": {
+    "conformance": "bun js/conformance.mjs"
+  }
+}

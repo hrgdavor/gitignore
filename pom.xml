@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        THE MATCHER AS A REUSABLE ARTIFACT — the Java half of `@hrg/gitignore`.
+
+        `hr.hrg:gitignore` is the core dependency for everything that needs `.gitignore` or `wildmatch`
+        semantics. It is consumed exactly as `hr.hrg:wyhash` is: a released artifact, or a local
+        repository install (`mvn install`) while iterating. No consumer may carry a copy of these classes.
+
+        SOURCES. The matcher lives in `java/src/hr/hrg/gitignore`, laid out as a plain package tree because
+        `bun java/run.mjs` compiles it with bare `javac` against `conformance/gitignore-vectors.json` — no
+        Maven and no JUnit needed to say "34/34". This POM therefore points `<sourceDirectory>` there and
+        includes only the matcher itself:
+
+          * `GitIgnoreFile` and `GitIgnoreRules` are the public API;
+          * `Glob` is package-private and is the segment DP they use.
+
+        `Runner`, `Decide` and `Json` in the same directory are the vector/benchmark harness, not library
+        code: `Runner` has the `main` the vectors run, `Decide` the benchmark CLI, `Json` their parser. They
+        are deliberately NOT compiled into this jar — the artifact is only the matcher.
+
+        DEPENDENCIES. The matcher imports `java.util`, `java.util.regex`, `java.nio.file` and
+        `java.nio.charset` — the JDK only. This POM declares no dependency, deliberately.
+    -->
+
+    <groupId>hr.hrg</groupId>
+    <artifactId>gitignore</artifactId>
+    <version>0.2.0</version>
+    <packaging>jar</packaging>
+
+    <name>gitignore</name>
+    <description>
+        git's .gitignore (wildmatch) semantics, one implementation per language and shared conformance
+        vectors: a file's patterns apply below its directory, the last matching pattern wins, a deeper file
+        beats a shallower one, a trailing slash means directories only, and matching is case-sensitive on
+        every platform.
+    </description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>25</maven.compiler.release>
+
+        <maven.compiler.plugin.version>3.11.0</maven.compiler.plugin.version>
+        <maven.jar.plugin.version>3.3.0</maven.jar.plugin.version>
+        <maven.install.plugin.version>3.1.4</maven.install.plugin.version>
+        <maven.deploy.plugin.version>3.1.2</maven.deploy.plugin.version>
+    </properties>
+
+    <build>
+        <sourceDirectory>java/src</sourceDirectory>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven.compiler.plugin.version}</version>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                    <includes>
+                        <include>hr/hrg/gitignore/GitIgnoreFile.java</include>
+                        <include>hr/hrg/gitignore/GitIgnoreRules.java</include>
+                        <include>hr/hrg/gitignore/Glob.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>${maven.jar.plugin.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <version>${maven.install.plugin.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-deploy-plugin</artifactId>
+                <version>${maven.deploy.plugin.version}</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -45,6 +45,8 @@ gitignore/
   src/ignore.zig           the chain (moved from fs-meta)
   src/conformance_test.zig the vectors as a test
   src/decide_main.zig      the bench contract as a CLI (`ignore-decide`)
+  js/                      the JavaScript port, exported by package.json as `@hrg/gitignore`
+  java/src/                the Java port, packaged by pom.xml as `hr.hrg:gitignore`
   conformance/             vectors every port must pass, the runner's file, and the corpus generator
   bench/                   the workloads and the runner
   doc/                     the rules as implemented, the porting guide, and where the corpus comes from
@@ -172,6 +174,37 @@ a path, and caches the chains it built. That is what lets a port's own walker us
 walker-shaped entry point is `ignored(dir_path, name, is_dir)`; `decide(rel_path, is_dir)` is the three-valued form
 the vectors and the bench CLI need, and it also honours an excluded ancestor (which is why it exists next to the
 per-entry one).
+
+## Using it from JavaScript and Java
+
+The matcher is packaged for both languages, so a consumer depends on it instead of copying the files.
+
+```js
+// JavaScript: package.json exports `.` and `./glob`.
+import { GitIgnoreRules, parseGitignore, readGitignore } from '@hrg/gitignore';
+import { compileSegments, segmentsMatch } from '@hrg/gitignore/glob';
+```
+
+The package is `package.json` here (`"type": "module"`, `.` → `js/gitignore.mjs`, `./glob` → `js/glob.mjs`);
+`bun pm pack` ships those two files and the README, nothing else.
+
+```xml
+<!-- Java: hr.hrg:gitignore, resolved the way hr.hrg:wyhash is. -->
+<dependency>
+    <groupId>hr.hrg</groupId>
+    <artifactId>gitignore</artifactId>
+    <version>0.2.0</version>
+</dependency>
+```
+
+`pom.xml` builds the three matcher classes — `GitIgnoreFile`, `GitIgnoreRules` and the package-private `Glob` —
+with JDK 25. `bun java/run.mjs` remains the zero-build gate for the port. Until `0.2.0` is published, a machine
+needs the checkout installed once into the local repository:
+
+```text
+cd gitignore
+mvn -q install
+```
 
 ## Licence
 
