@@ -5,17 +5,26 @@
 // path once per decision (the caller does it), reuses two scratch arrays, and lets a caller ask about the first `count`
 // segments so the directory-only ancestor check needs no second split.
 
+// A segment with no wildcard metacharacter and no escape compares by string equality. The regex it would have
+// compiled to is an anchored, fully escaped literal, so `===` is the same decision without the engine's work —
+// the same fast path the Java port gained 3.03x from (doc/measurement.md).
+const hasWildcard = /[*?[\\]/;
+
 /**
- * Compile one pattern into the form the DP wants: an array of `{ doubleStar }` or `{ regex }` entries, in order.
+ * Compile one pattern into the form the DP wants: an array of `{ doubleStar }`, `{ literal }` or `{ regex }`
+ * entries, in order.
  *
  * @param {string} glob the pattern, with any leading `/` already removed
  * @param {boolean} anchored whether the pattern is anchored to the walk root
  * @param {(segment: string) => string} translate one segment to a regex body (the port's own translator)
  */
 export function compileSegments(glob, anchored, translate) {
-  const segments = glob.split('/').map((segment) =>
-    segment === '**' ? { doubleStar: true } : { regex: new RegExp(`^${translate(segment)}$`) },
-  );
+  const segments = glob.split('/').map((segment) => {
+    if (segment === '**') return { doubleStar: true };
+    // A backslash may escape a wildcard, so it stays on the regex path rather than being guessed at here.
+    if (!hasWildcard.test(segment)) return { literal: segment };
+    return { regex: new RegExp(`^${translate(segment)}$`) };
+  });
   // An unanchored pattern applies at any depth, which is a leading `**` and nothing else.
   return anchored ? segments : [{ doubleStar: true }, ...segments];
 }
@@ -36,7 +45,7 @@ function rows(size) {
 /**
  * Does the compiled pattern match the first `count` segments of `text`?
  *
- * @param {Array<{doubleStar?: boolean, regex?: RegExp}>} segments
+ * @param {Array<{doubleStar?: boolean, literal?: string, regex?: RegExp}>} segments
  * @param {string[]} text a path already split on `/`
  * @param {number} [count] how many segments to consider (default: all of them)
  */
@@ -58,6 +67,10 @@ export function segmentsMatch(segments, text, count = text.length) {
         if (last) next[position] = any;
         if (reach[position]) any = true;
         if (!last) next[position] = any;
+      }
+    } else if (segment.literal !== undefined) {
+      for (let position = 0; position < count; position += 1) {
+        if (reach[position] && text[position] === segment.literal) next[position + 1] = true;
       }
     } else {
       for (let position = 0; position < count; position += 1) {

@@ -89,3 +89,21 @@ run rather than compare two runs.
 - Per-rule `Matcher` reuse for the regex branch: `pattern.matcher(path)` allocates, and a rule answers once per path.
 - Neither port has the Zig implementation's per-chain indexing, which is the next idea worth copying — and the first one
   that would show up in the small workloads rather than in `backtrack`.
+## The literal fast path, ported to JS
+
+The Java port gained 3.03x from comparing plain pattern segments with `equals` instead of `Pattern.matcher(…).matches()`. The
+same change in `js/glob.mjs` is worth much less, and the reason is instructive:
+
+- **doublestar**: ~2-3% (faster in 22 of 26 paired processes; one session had all 10 new values below all 10 old).
+- **backtrack**: ~4-8% (faster in 19 of 26 pairs; means -8.1%, -6.3%, -4.4% across three sessions).
+- **the other four workloads**: 0 DP segments, so they never reach the change; their variation is the ~±4% noise floor.
+
+The Java port gained more because it routes **every** pattern through the DP; the JS port routes only patterns containing
+`**`, so four of six workloads never touch the fast path, and on the two that do the ancestor slice/join loop dominates. A
+change being worth 8% in one port and 300% in another is not a contradiction: it is a measurement of how much of the time
+the changed code actually owns.
+
+Method note: the official harness at `--repeat 1 --rounds 12` put the totals inside its own noise (21.9 s vs 22.8 s with
+start-up subtraction differing 83 vs 50 ms), so the decision was made on **alternating paired fresh processes** with the loop
+timed directly, three sessions, and only the paired result trusted - between-session drift moved the old build from 16.7 s to
+19.8 s, which would have made any unpaired comparison say whatever the drift said.
