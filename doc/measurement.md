@@ -58,12 +58,34 @@ Measured at 12 rounds, total processing:
 The lesson is the same one the JS port learned, twice: **allocation, not comparison**. The DP's arithmetic was never the
 cost; allocating a `Matcher` (Java) or two arrays (JS) per decision was.
 
+## The criterion that failed
+
+The steady-state table above suggested a rule: use the DP only where a pattern has **two or more** `**` segments, and the
+compiled regex everywhere else. `backtrack`'s worst rule is `src/**/test/**/impl/**/*.g4` (three), `doublestar`'s rules have
+at most one, and the DP was visibly costing Java on `doublestar`.
+
+Implemented and measured: **refuted**.
+
+| configuration                                 | total (12 rounds) | backtrack | doublestar |
+| --------------------------------------------- | ----------------: | --------: | ---------: |
+| full DP + literal segments + split once       | 12 405 ms         | 7 868 ms  | 2 328 ms   |
+| the same, with the two-or-more-`**` criterion | 15 641 ms         | 9 722 ms  | 3 259 ms   |
+
+The cause is one rule in the workload: `**/*.class`. It has a single `**`, so the criterion sends it to the regex, whose
+`(?:.*/)?[^/]*\.class$` is slower on these paths than the DP's row scan. "One `**`" is not "cheap": it depends on the
+pattern and on the path depth, and a criterion that ignores that is a guess wearing a measurement's clothes.
+
+Both numbers moved in the same direction, in the run that produced each, so the direction is not in doubt. The **size** is:
+this bench has ~13% run-to-run variance at 12 rounds (the restored build measured 12 405 ms and 14 018 ms an hour apart), and
+nothing below that margin should be read as a result. The next comparison should interleave the two configurations in one
+run rather than compare two runs.
+
 ## What is still open
 
-- The unmeasured criterion above is the biggest known win: DP for a pattern with two or more `**` segments, or for a
-  directory-only rule, and the compiled regex otherwise. The workloads support it (`backtrack`'s worst pattern has three,
-  `doublestar`'s have one at most), but the edit that would have measured it broke `decide` and was reverted rather than
-  guessed at.
+- A criterion that survives measurement. "Two or more `**`" does not (see above); what the data supports is "the DP is
+  never slower than the regex on these workloads", which argues for keeping the DP everywhere and optimising inside it —
+  the literal fast path and the split were worth 4.4x between them.
+
 - Per-rule `Matcher` reuse for the regex branch: `pattern.matcher(path)` allocates, and a rule answers once per path.
 - Neither port has the Zig implementation's per-chain indexing, which is the next idea worth copying — and the first one
   that would show up in the small workloads rather than in `backtrack`.
