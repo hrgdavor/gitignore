@@ -143,8 +143,6 @@
                                 </goals>
                                 <configuration>
                                     <skip>${gpg.skip}</skip>
-                                    <!-- gpg's own message, at INFO, so a failure explains itself: without this the plugin exits 2 and prints nothing unless Maven runs with -X. -->
-                                    <verbose>true</verbose>
                                     <gpgArguments>
                                         <arg>--pinentry-mode</arg>
                                         <arg>loopback</arg>
