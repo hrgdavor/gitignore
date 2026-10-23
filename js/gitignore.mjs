@@ -26,6 +26,8 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** The file name a walk reads per directory. */
+import { compileSegments, segmentsMatch } from './glob.mjs';
+
 export const GITIGNORE_FILE_NAME = '.gitignore';
 
 /**
@@ -146,10 +148,9 @@ function parseRule(rawLine) {
   return {
     negated,
     directoryOnly,
-    // Both anchors are required: Java's `Matcher.matches()` anchors the whole pattern, while JavaScript's
-    // `RegExp.test` searches — and a missing `^` lets an anchored pattern match a path *suffix*. That one
-    // difference is what the ignore vector `anchored-pattern` caught between the two ports.
-    pattern: new RegExp(`^${anchored ? '' : '(?:.*/)?'}${translateGlob(line)}$`),
+    // The path is matched by the segment DP (see glob.mjs); only the per-segment regexes are compiled here, which is
+    // also where classes and escapes are understood.
+    segments: compileSegments(line, anchored, translateGlob),
   };
 }
 
@@ -218,22 +219,21 @@ export function parseGitignore(relativeDirectory, text) {
   };
 }
 
-function matches(rule, path, isDirectory) {
+function matches(rule, path, isDirectory, text = null) {
+  // Split once per decision, not once per rule: `text` arrives from the caller that already has it.
+  const segments = text ?? path.split('/');
   if (!rule.directoryOnly) {
-    return rule.pattern.test(path);
+    return segmentsMatch(rule.segments, segments);
   }
-  if (isDirectory && rule.pattern.test(path)) {
+  if (isDirectory && segmentsMatch(rule.segments, segments)) {
     return true;
   }
-  // A file inside an excluded directory counts as excluded, so a directory-only pattern matches any
-  // ancestor too. The walk prunes before it gets here; a caller testing a path on its own gets the same
-  // answer either way.
-  let slash = path.indexOf('/');
-  while (slash >= 0) {
-    if (rule.pattern.test(path.slice(0, slash))) {
+  // A file inside an excluded directory counts as excluded, so a directory-only pattern matches any ancestor too.
+  // The walk prunes before it gets here; a caller testing a path on its own gets the same answer either way.
+  for (let count = segments.length - 1; count >= 1; count -= 1) {
+    if (segmentsMatch(rule.segments, segments, count)) {
       return true;
     }
-    slash = path.indexOf('/', slash + 1);
   }
   return false;
 }

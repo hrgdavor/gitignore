@@ -179,32 +179,46 @@ Same as `fs-meta`: `LicenseRef-GPL-3.0-with-Commons-Clause`, `Copyright (c) 2026
 
 ## Ports: measured, and what the numbers say
 
-Three implementations, the same 34 vectors, the same bytes from `bench/perf.mjs`:
+Three implementations, the same 34 vectors, the same bytes from `bench/perf.mjs`. Start-up is measured separately (a run
+with an empty path list) and **subtracted**, so the table is the matcher, not the loader:
 
-| workload      | Zig        | JS                  | Java               |
-| --------      | --:        | -:                  | ---:               |
-| flat          | 11 ms      | 50 ms               | 190 ms             |
-| deep          | 27 ms      | 155 ms              | 620 ms             |
-| doublestar    | 33 ms      | 129 ms              | 700 ms             |
-| anchored      | 19 ms      | 82 ms               | 330 ms             |
-| dirs          | 12 ms      | 56 ms               | 146 ms             |
-| **backtrack** | **78 ms**  | **2942 ms**         | **16615 ms**       |
-| total         | **182 ms** | **3407 ms (18.7x)** | **18099 ms (99x)** |
+| workload      | Zig          | JS                    | Java                    |
+| --------      | --:          | -:                    | ---:                    |
+| flat          | 0.0 ms       | 6.6 ms                | 17.8 ms                 |
+| deep          | 17.2 ms      | 236.9 ms              | 441.8 ms                |
+| doublestar    | 21.6 ms      | 507.2 ms              | 355.8 ms                |
+| anchored      | 8.0 ms       | 138.6 ms              | 84.1 ms                 |
+| dirs          | 0.9 ms       | 28.8 ms               | 33.3 ms                 |
+| **backtrack** | **66.3 ms**  | **1488.7 ms**         | **17598.6 ms**          |
+| total         | **114.0 ms** | **2406.8 ms (21.1x)** | **18531.3 ms (162.6x)** |
 
-Correctness first: Zig and Java are **34/34**, the JS port is **34/34**. The differences are not small and they are not
-noise, and the `backtrack` row is the reason this project exists: both ports translate a pattern into a regular
-expression, and a `**` with a long path makes the regex engine backtrack exponentially — 38x for JS, 213x for Java, on
-one workload. The Zig implementation replaced that translation with a segment dynamic program precisely because this was
-observed on a real tree, and the workload reproduces it without that tree.
+Start-up, for completeness: Zig ~12 ms, JS ~49 ms, Java ~115 ms.
 
-Two honest caveats about the table:
+### The segment DP, and what it did for a port
 
-- **It measures a process**, so ~11 ms of JVM/Node/Bun start-up is in every row. That flatters none of the ports on the
-  small workloads and it does not explain a 16-second row.
-- **The ports are young.** The JS port lost three of its four vector failures this afternoon and the Java port lost the
-  same four; both were carrying the same bugs because they share a lineage. Their slowness is a design difference, not a
-  lack of tuning — but a port that adopts the segment DP has every reason to close most of the gap, and that is exactly
-  the kind of finding this bench is for.
+Both ports started with the usual translation of a pattern into a regular expression. On `backtrack` — a `**` pattern
+against a long path — that makes the regex engine try exponentially many splits: JS took **3056 ms** and Java **19671 ms**,
+against Zig's 78 ms.
+
+The JS port now uses the same segment dynamic program as Zig (`js/glob.mjs`): `reach[j]` means "the pattern so far
+matches the first j segments", an ordinary segment advances one row, and `**` is an OR over the row. Per-segment regexes
+remain, but against one segment they cannot backtrack across `/`.
+
+- `backtrack`: **3056 ms → 1489 ms** (2.1x faster), total **3286 ms → 2407 ms**.
+- The first version was *slower* than the regex (6558 ms): it split the path per rule and allocated two arrays per pattern
+  segment. Splitting once per decision and reusing two scratch rows is what turned it into a win. **In JS the allocation
+  was the cost, not the comparison** — a lesson that transfers to any port tempted to copy the algorithm without the
+  buffer discipline.
+
+The Java port still carries the regex translation, which is why its `backtrack` is 17599 ms. It is the obvious next port
+to change, and it needs no new idea: the same DP, the same two rows, measured by the same table.
+
+### Two caveats
+
+- The runner measures a process; the start-up column is a subtraction, and on a loaded machine it is a noisy one. The
+  large rows are far outside that noise; the small ones are not.
+- The ports are young. Their remaining distance to Zig is a design difference, not tuning: Java has not adopted the DP, and
+  neither port has the Zig implementation's per-chain indexing.
 
 ## Running the three
 
