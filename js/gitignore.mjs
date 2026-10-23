@@ -277,6 +277,23 @@ export class GitIgnoreRules {
   }
 
   decide(relativePath, isDirectory) {
+    const direct = this.decideDirect(relativePath, isDirectory);
+    if (direct === true) {
+      return true;
+    }
+    // An excluded directory is never entered, so a rule for a file inside it cannot re-include that file: ask the
+    // ancestors, deepest first. A parent that a later rule re-includes answers false and is skipped.
+    const segments = relativePath.split('/');
+    for (let count = segments.length - 1; count >= 1; count -= 1) {
+      if (this.decideDirect(segments.slice(0, count).join('/'), true) === true) {
+        return true;
+      }
+    }
+    return direct;
+  }
+
+  /** What the rules say about this exact path, ignoring its ancestors. */
+  decideDirect(relativePath, isDirectory) {
     for (let index = this.#stack.length - 1; index >= 0; index--) {
       const decision = this.#stack[index].decide(relativePath, isDirectory);
       if (decision !== undefined) {
