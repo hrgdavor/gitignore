@@ -107,3 +107,37 @@ Method note: the official harness at `--repeat 1 --rounds 12` put the totals ins
 start-up subtraction differing 83 vs 50 ms), so the decision was made on **alternating paired fresh processes** with the loop
 timed directly, three sessions, and only the paired result trusted - between-session drift moved the old build from 16.7 s to
 19.8 s, which would have made any unpaired comparison say whatever the drift said.
+## Closing the port gap: 17.2x -> 1.61x, by memoising ancestors
+
+The ports were 17.2x (JS) and 11.2x (Java) behind Zig, and the obvious suspect — the matcher — was wrong. A phase split of the
+JS loop (per round, medians, the halves summing to the total) put **95% of the cost in re-deciding ancestors**: `backtrack`
+asked about 84,000 ancestor directories when only **42** were distinct, `deep` 26,000 over 286. Parsing and chain building were
+noise, because the bench chain is a single root file.
+
+So `GitIgnoreRules` memoises each directory's excluded answer, cleared by `push`/`pop` — the only stack changes, so a cached
+answer cannot outlive its stack — ancestors come from walking separators backwards (one substring, no split+join), and
+`GitIgnoreFile.decide` splits the path once per decision rather than once per `**` rule.
+
+Paired alternating A/B, 8 fresh processes x 12 rounds, verdicts byte-identical:
+
+| workload      | JS before   | JS after   | Java before | Java after |
+| ------------- | ----------: | ---------: | ----------: | ---------: |
+| flat          | 15.1        | 11.8       | 59.5        | 48.0       |
+| deep          | 1191.3      | 239.9      | 1553.7      | 343.6      |
+| doublestar    | 1098.3      | 442.2      | 2468.9      | 1101.4     |
+| anchored      | 255.9       | 190.1      | 586.4       | 292.2      |
+| dirs          | 58.6        | 47.9       | 56.0        | 45.8       |
+| **backtrack** | **16765.2** | **887.9**  | **8522.2**  | **658.6**  |
+| total         | 19384.5     | **1819.8** | 13246.7     | **2489.7** |
+
+Standing against Zig, per round: **JS 1.61x, Java 2.20x** — an independent re-run here measured Zig 1073.9 ms against JS
+1822.5 ms, i.e. 1.70x, the same claim inside the harness's noise. The smallest per-workload gain is -18.2% (`dirs`), above the
+~13% floor, and every comparison is paired, so nothing rests on between-session drift.
+
+Correctness beyond the 34 vectors: JS, Java and Zig verdicts byte-identical across all six workloads (10,000 paths) before and
+after, and 54,000 randomised decisions over 300 random multi-file stacks x 5 seeds identical between old and new JS — which is
+what exercises the memo's invalidation rather than assuming it.
+
+**What is left**: 87% of the residual is the direct rule scan, and the remaining lever is Zig's rule-chain index
+(`**/x` -> basename suffix, literal/suffix/anchored classes, first-segment prune). It is unstarted, and it now owns a much
+smaller absolute number than it would have before this change.

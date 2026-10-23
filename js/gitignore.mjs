@@ -216,9 +216,16 @@ export function parseGitignore(relativeDirectory, text) {
         }
         scoped = relativePath.slice(prefix.length);
       }
+      // Split once for every `**` rule of this file, and only if one of them is reached: a file whose patterns all
+      // compile to a regex pays no split at all (the `*.log`-shaped rule sets of the small workloads).
+      let segments = null;
       for (let index = rules.length - 1; index >= 0; index--) {
-        if (matches(rules[index], scoped, isDirectory)) {
-          return !rules[index].negated;
+        const rule = rules[index];
+        if (rule.segments !== null && segments === null) {
+          segments = scoped.split('/');
+        }
+        if (matches(rule, scoped, isDirectory, segments)) {
+          return !rule.negated;
         }
       }
       return undefined;
@@ -286,13 +293,20 @@ export function readGitignore(directoryPath, relativeDirectory) {
  */
 export class GitIgnoreRules {
   #stack = [];
+  // A directory's answer, keyed by its path relative to the walk root. A path list visits the same directories over
+  // and over (`backtrack` asks about 84,000 ancestor directories that are 42 distinct ones), and the rules are a
+  // snapshot, so the answer cannot change while the stack is unchanged. `push`/`pop` clear it: they are the only
+  // things that change which files govern a directory, and a cached "excluded" must never outlive them.
+  #excluded = new Map();
 
   push(file) {
     this.#stack.push(file);
+    this.#excluded.clear();
   }
 
   pop() {
     this.#stack.pop();
+    this.#excluded.clear();
   }
 
   get depth() {
@@ -305,10 +319,17 @@ export class GitIgnoreRules {
       return true;
     }
     // An excluded directory is never entered, so a rule for a file inside it cannot re-include that file: ask the
-    // ancestors, deepest first. A parent that a later rule re-includes answers false and is skipped.
-    const segments = relativePath.split('/');
-    for (let count = segments.length - 1; count >= 1; count -= 1) {
-      if (this.decideDirect(segments.slice(0, count).join('/'), true) === true) {
+    // ancestors, deepest first. A parent that a later rule re-includes answers false and is skipped. The ancestor is
+    // found by walking the separators backwards, so no ancestor costs a split and a join — one substring, which is
+    // also the memo's key.
+    for (let slash = relativePath.lastIndexOf('/'); slash >= 0; slash = relativePath.lastIndexOf('/', slash - 1)) {
+      const ancestor = relativePath.slice(0, slash);
+      let excluded = this.#excluded.get(ancestor);
+      if (excluded === undefined) {
+        excluded = this.decideDirect(ancestor, true) === true;
+        this.#excluded.set(ancestor, excluded);
+      }
+      if (excluded) {
         return true;
       }
     }

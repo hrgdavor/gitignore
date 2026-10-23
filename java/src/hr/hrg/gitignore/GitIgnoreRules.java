@@ -8,7 +8,9 @@
 package hr.hrg.gitignore;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -28,10 +30,21 @@ import java.util.Optional;
 public final class GitIgnoreRules {
 
     private final List<GitIgnoreFile> stack = new ArrayList<>();
+    /**
+     * A directory's answer, keyed by its path relative to the walk root.
+     *
+     * <p>A path list asks the same directory over and over — the {@code backtrack} workload asks about 84,000 ancestor
+     * directories that are 42 distinct ones, and each ask used to re-run the whole matcher against a 43-segment path.
+     * The rules are a snapshot, so the answer cannot change while the stack is unchanged; {@link #push} and
+     * {@link #pop} clear it because they are the only things that change which files govern a directory, and a cached
+     * "excluded" must never outlive them.</p>
+     */
+    private final Map<String, Boolean> excludedDirectories = new HashMap<>();
 
     /** Enters a directory: its rules (an empty file when it has none) apply from here on. */
     public void push(GitIgnoreFile file) {
         stack.add(file);
+        excludedDirectories.clear();
     }
 
     /** Leaves the directory most recently pushed. */
@@ -39,6 +52,7 @@ public final class GitIgnoreRules {
         if (!stack.isEmpty()) {
             stack.remove(stack.size() - 1);
         }
+        excludedDirectories.clear();
     }
 
     /** How many {@code .gitignore} files currently apply — the walk's depth, for a test or a diagnostic. */
@@ -59,12 +73,19 @@ public final class GitIgnoreRules {
             return direct;
         }
         // An excluded directory is never entered, so a rule for a file inside it cannot re-include that file: ask the
-        // ancestors, deepest first. A parent that a later rule re-includes answers false and is skipped.
+        // ancestors, deepest first. A parent that a later rule re-includes answers false and is skipped. Each ancestor
+        // is answered once per stack state, so a directory that many paths share is decided once.
         int slash = relativePath.lastIndexOf('/');
         while (slash > 0) {
-            Optional<Boolean> ancestor = decideDirect(relativePath.substring(0, slash), true);
-            if (ancestor.isPresent() && ancestor.get()) {
-                return ancestor;
+            String ancestor = relativePath.substring(0, slash);
+            Boolean excluded = excludedDirectories.get(ancestor);
+            if (excluded == null) {
+                Optional<Boolean> decision = decideDirect(ancestor, true);
+                excluded = decision.isPresent() && decision.get();
+                excludedDirectories.put(ancestor, excluded);
+            }
+            if (excluded) {
+                return Optional.of(true);
             }
             slash = relativePath.lastIndexOf('/', slash - 1);
         }
