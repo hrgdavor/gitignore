@@ -17,5 +17,29 @@ jobs:
         with:
           version: 0.17.0
 
-      - name: Test
+      - name: Zig reference (matcher, chain, vectors)
         run: zig build test --summary all
+
+      - uses: oven-sh/setup-bun@v2
+
+      # The JS port is measured, not trusted: this runs the same 34 vectors it does locally.
+      - name: JS port against the vectors
+        run: bun js/conformance.mjs
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      # The Java port compiles itself with javac, so no Maven and no test framework: bun java/run.mjs is the gate.
+      - name: Java port against the vectors
+        run: bun java/run.mjs
+
+      # Optional but cheap: prove the three bench CLIs still answer the same verdicts on a small workload.
+      - name: Bench CLIs agree with each other
+        run: |
+          bun bench/perf.mjs --emit
+          zig build -Doptimize=ReleaseFast --summary none
+          for port in "zig-out/bin/ignore-decide.exe" "bun js/decide.mjs"; do
+            "$port" --rules .tmp/workloads/flat.gitignore --paths .tmp/workloads/flat.paths > /dev/null
+          done
