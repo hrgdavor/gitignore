@@ -1,3 +1,7 @@
+> **`glob` is abandoned and strictly not supported.** This project implements git's `wildmatch` and nothing else:
+> braces, extglob and PCRE are not a dialect it accepts, here or in any of its ports. The vectors in
+> `conformance/` are the definition of the edge cases.
+
 # The rules, as implemented
 
 This is the rules table the conformance vectors cite. A rule is git's; the implementation is
