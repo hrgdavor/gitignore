@@ -291,6 +291,7 @@ bun bench/perf.mjs --repeat 3 \
 The `publish` profile carries everything Central requires, and nothing is added to the normal build:
 
 ```text
+$env:MAVEN_GPG_PASSPHRASE = '<your passphrase>'
 mvn -Ppublish -DskipTests package     # check: binary + sources + javadoc jars all appear in target/
 mvn -Ppublish -Dgpg.skip=false deploy # the release
 ```
@@ -305,7 +306,12 @@ Requirements, learned from a project of this author's that publishes this way (`
   (proving the passphrase reaches the key); with it unset the agent answers `Operation cancelled`, which is what a GUI-less
   run looks like. A passphrase stored in `settings.xml` under the old id is ignored now.
 - `gpg.skip` defaults to `true`, so a local build never signs; the release passes `-Dgpg.skip=false`.
-- `central-publishing-maven-plugin` runs with `extensions=true`, which makes it take over `deploy` and suppress the legacy
+- Deployment goes through `maven-deploy-plugin` and the `distributionManagement` above (Sonatype's `maven-releases`
+  endpoint), **not** through `central-publishing-maven-plugin`. The publisher was tried first and removed: with
+  `extensions=true` it hijacks the `deploy` phase, and under the mvnd daemon its goal never executed — a deploy staged the
+  bundle and stopped, with no upload and not a word about "central" in the log. The standard plugin is the phase actually
+  visible in the log, and Sonatype accepts direct deployment to that endpoint with a token in the server named `central`.
+- The old publisher line was: `central-publishing-maven-plugin` runs with `extensions=true`, which makes it take over `deploy` and suppress the legacy
   `maven-deploy-plugin` (that plugin would push to the old `maven-releases` URL and fail).
 - The version comes from the pom (`0.3.0`), and `build.zig.zon`/`package.json` must agree — they do.
 

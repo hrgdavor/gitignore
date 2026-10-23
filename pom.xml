@@ -151,18 +151,6 @@
                             </execution>
                         </executions>
                     </plugin>
-                    <!-- extensions=true makes this plugin take over deploy and suppress the legacy maven-deploy-plugin,
-                         which would otherwise push to the old maven-releases URL and fail. -->
-                    <plugin>
-                        <groupId>org.sonatype.central</groupId>
-                        <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>${central.publishing.plugin.version}</version>
-                        <extensions>true</extensions>
-                        <configuration>
-                            <publishingServerId>central</publishingServerId>
-                            <autoPublish>true</autoPublish>
-                        </configuration>
-                    </plugin>
                 </plugins>
             </build>
         </profile>
