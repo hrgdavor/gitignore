@@ -176,3 +176,43 @@ per-entry one).
 ## Licence
 
 Same as `fs-meta`: `LicenseRef-GPL-3.0-with-Commons-Clause`, `Copyright (c) 2026 Davor Hrg`.
+
+## Ports: measured, and what the numbers say
+
+Three implementations, the same 34 vectors, the same bytes from `bench/perf.mjs`:
+
+| workload      | Zig        | JS                  | Java               |
+| --------      | --:        | -:                  | ---:               |
+| flat          | 11 ms      | 50 ms               | 190 ms             |
+| deep          | 27 ms      | 155 ms              | 620 ms             |
+| doublestar    | 33 ms      | 129 ms              | 700 ms             |
+| anchored      | 19 ms      | 82 ms               | 330 ms             |
+| dirs          | 12 ms      | 56 ms               | 146 ms             |
+| **backtrack** | **78 ms**  | **2942 ms**         | **16615 ms**       |
+| total         | **182 ms** | **3407 ms (18.7x)** | **18099 ms (99x)** |
+
+Correctness first: Zig and Java are **34/34**, the JS port is **34/34**. The differences are not small and they are not
+noise, and the `backtrack` row is the reason this project exists: both ports translate a pattern into a regular
+expression, and a `**` with a long path makes the regex engine backtrack exponentially — 38x for JS, 213x for Java, on
+one workload. The Zig implementation replaced that translation with a segment dynamic program precisely because this was
+observed on a real tree, and the workload reproduces it without that tree.
+
+Two honest caveats about the table:
+
+- **It measures a process**, so ~11 ms of JVM/Node/Bun start-up is in every row. That flatters none of the ports on the
+  small workloads and it does not explain a 16-second row.
+- **The ports are young.** The JS port lost three of its four vector failures this afternoon and the Java port lost the
+  same four; both were carrying the same bugs because they share a lineage. Their slowness is a design difference, not a
+  lack of tuning — but a port that adopts the segment DP has every reason to close most of the gap, and that is exactly
+  the kind of finding this bench is for.
+
+## Running the three
+
+```text
+bun js/conformance.mjs                                  # JS port: 34/34
+$env:JAVA_HOME='C:\Program Files\Java\jdk-25'; bun java/run.mjs   # Java port: 34/34, compiles and runs it
+bun bench/perf.mjs --repeat 3 \
+  --port "zig=zig-out/bin/ignore-decide.exe --rules {rules} --paths {paths}" \
+  --port "js=bun js/decide.mjs --rules {rules} --paths {paths}" \
+  --port "java=\"…\bin\java.exe\" -cp java/out hr.hrg.gitignore.Decide --rules {rules} --paths {paths}"
+```

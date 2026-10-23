@@ -91,6 +91,27 @@ for (let index = 0; index < process.argv.length; index += 1) {
   // `--port "label=command …"` names the row; a bare command uses the executable's own name.
   ports.push(equals > 0 ? { label: spec.slice(0, equals), command: spec.slice(equals + 1) } : { label: null, command: spec });
 }
+/** Split a command line on spaces, honouring single and double quotes: a port may live under a path with spaces. */
+function splitCommand(command) {
+  const parts = [];
+  let current = "";
+  let quote = null;
+  for (const character of command) {
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else current += character;
+    } else if (character === "\"" || character === "'") {
+      quote = character;
+    } else if (character === " ") {
+      if (current !== "") { parts.push(current); current = ""; }
+    } else {
+      current += character;
+    }
+  }
+  if (current !== "") parts.push(current);
+  return parts;
+}
+
 const repeat_at = process.argv.indexOf('--repeat');
 const repeat = repeat_at >= 0 ? Number(process.argv[repeat_at + 1] ?? 5) : 5;
 
@@ -120,7 +141,7 @@ console.log('| -------- | ---- | -------: | ------: | ----------: |');
 const totals = new Map();
 for (const workload of workloads) {
   for (const port of ports) {
-    const template = port.command.split(' ').filter(Boolean);
+    const template = splitCommand(port.command);
     const label = port.label ?? template[0].split(/[\\/]/).pop();
     let best = Infinity;
     let verdicts = 0;
