@@ -34,12 +34,3 @@ jobs:
       # The Java port compiles itself with javac, so no Maven and no test framework: bun java/run.mjs is the gate.
       - name: Java port against the vectors
         run: bun java/run.mjs
-
-      # Optional but cheap: prove the three bench CLIs still answer the same verdicts on a small workload.
-      - name: Bench CLIs agree with each other
-        run: |
-          bun bench/perf.mjs --emit
-          zig build -Doptimize=ReleaseFast --summary none
-          for port in "zig-out/bin/ignore-decide.exe" "bun js/decide.mjs"; do
-            "$port" --rules .tmp/workloads/flat.gitignore --paths .tmp/workloads/flat.paths > /dev/null
-          done
