@@ -182,17 +182,17 @@ Same as `fs-meta`: `LicenseRef-GPL-3.0-with-Commons-Clause`, `Copyright (c) 2026
 Three implementations, the same 34 vectors, the same bytes from `bench/perf.mjs`. Start-up is measured separately (a run
 with an empty path list) and **subtracted**, so the table is the matcher, not the loader:
 
-| workload      | Zig          | JS                    | Java                    |
-| --------      | --:          | -:                    | ---:                    |
-| flat          | 0.0 ms       | 6.6 ms                | 17.8 ms                 |
-| deep          | 17.2 ms      | 236.9 ms              | 441.8 ms                |
-| doublestar    | 21.6 ms      | 507.2 ms              | 355.8 ms                |
-| anchored      | 8.0 ms       | 138.6 ms              | 84.1 ms                 |
-| dirs          | 0.9 ms       | 28.8 ms               | 33.3 ms                 |
-| **backtrack** | **66.3 ms**  | **1488.7 ms**         | **17598.6 ms**          |
-| total         | **114.0 ms** | **2406.8 ms (21.1x)** | **18531.3 ms (162.6x)** |
+| workload      | Zig          | JS                    | Java                  |
+| --------      | --:          | -:                    | ---:                  |
+| flat          | 1.1 ms       | 7.1 ms                | 1.1 ms                |
+| deep          | 20.9 ms      | 260.6 ms              | 379.7 ms              |
+| doublestar    | 22.6 ms      | 494.5 ms              | 614.2 ms              |
+| anchored      | 7.6 ms       | 127.3 ms              | 193.8 ms              |
+| dirs          | 2.9 ms       | 29.0 ms               | 3.6 ms                |
+| **backtrack** | **69.0 ms**  | **1640.8 ms**         | **3205.1 ms**         |
+| total         | **124.1 ms** | **2559.3 ms (20.6x)** | **4397.4 ms (35.4x)** |
 
-Start-up, for completeness: Zig ~12 ms, JS ~49 ms, Java ~115 ms.
+Start-up, for completeness: Zig ~11 ms, JS ~51 ms, Java ~171 ms.
 
 ### The segment DP, and what it did for a port
 
