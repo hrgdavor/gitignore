@@ -287,6 +287,23 @@ bun bench/perf.mjs --repeat 3 \
   --port "js=bun js/decide.mjs --rules {rules} --paths {paths}" \
   --port "java=\"…\bin\java.exe\" -cp java/out hr.hrg.gitignore.Decide --rules {rules} --paths {paths}"
 ```
+## Publishing to npm
+
+```text
+cd <this checkout>
+bun js/conformance.mjs          # 34/34, the vectors are the gate
+bun pm pack --dry-run           # 4 files: package.json, README.md, js/gitignore.mjs, js/glob.mjs
+npm publish                     # publishConfig supplies --access public
+```
+
+**It needs a live token.** Measured on 2026-10-24: `npm whoami` answered `401 Unauthorized` with the token in
+`~/.npmrc`, and `npm publish` reported `404 Not Found - @hrg/gitignore@0.3.1`. npm answers 404 rather than 403 when a
+token cannot publish to a scope, so the 404 is the *symptom* of an expired/revoked token, not of a missing package
+(`npm owner ls @hrg/gitignore` works and names `hrgdavor`, and 0.3.0 is on the registry). Fix with `npm login`, then
+publish; no change to this repository is needed.
+
+`fs-meta` pins `"@hrg/gitignore": "0.3.0"` exactly, which is the published version. Bump that one line to `"0.3.1"` when
+npm has it.
 ## Publishing the Maven artifact
 
 The release is **0.3.0**, the same version as `build.zig.zon` and `package.json`. Publishing is deliberate now:
