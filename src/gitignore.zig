@@ -211,10 +211,14 @@ pub const Rules = struct {
         while (start <= rel_path.len) {
             const slash = std.mem.indexOfScalarPos(u8, rel_path, start, '/') orelse rel_path.len;
             const segment = rel_path[start..slash];
-            if (self.literals.get(segment)) |literal| {
-                if (best == null or literal > best.?) best = literal;
-            }
             const last_segment = slash == rel_path.len;
+            // An unanchored literal names one file or directory, so only the final segment can be that name.
+            // A matching ancestor directory is the caller's ancestor walk, not this path's own match.
+            if (last_segment) {
+                if (self.literals.get(segment)) |literal| {
+                    if (best == null or literal > best.?) best = literal;
+                }
+            }
             if (!last_segment or is_dir) {
                 if (self.literals_dir_only.get(segment)) |literal| {
                     if (best == null or literal > best.?) best = literal;
@@ -359,6 +363,12 @@ fn splitSegments(input: []const u8, out: *[max_segments][]const u8) usize {
     return count;
 }
 
+/// The final `/`-separated segment of `text` — `text` itself when it holds no `/`.
+fn lastSegment(text: []const u8) []const u8 {
+    const slash = std.mem.lastIndexOfScalar(u8, text, '/') orelse return text;
+    return text[slash + 1 ..];
+}
+
 /// Matches a `/`-separated glob against a `/`-separated path, in full, with git's `**` rules.
 ///
 /// A `**` that is a whole segment matches zero or more path segments; a *trailing* `**` requires at least one,
@@ -368,7 +378,19 @@ fn splitSegments(input: []const u8, out: *[max_segments][]const u8) usize {
 /// Implemented as a segment dynamic program — `ok[j]` says "the pattern so far matches the first `j` path
 /// segments" — because the recursive form re-tested `**` at every boundary and went exponential on deep paths.
 /// Each pattern segment advances one row, so the work is O(pattern segments × path segments) and never backtracks.
+///
+/// A last pattern segment that is not `**` has to match the path's last segment in any successful match, so
+/// that one comparison runs first. It rejects `.../*.g4` against `.../File.java` before either input is split,
+/// and a rule that cannot match therefore costs one segment test rather than a whole DP — the shape the
+/// `backtrack` workload measures.
 pub fn globMatch(pattern: []const u8, path: []const u8) bool {
+    if (pattern.len != 0) {
+        const tail = lastSegment(pattern);
+        if (!std.mem.eql(u8, tail, "**")) {
+            if (path.len == 0) return false;
+            if (!wildMatchSegment(tail, lastSegment(path))) return false;
+        }
+    }
     var pattern_segments: [max_segments][]const u8 = undefined;
     var path_segments: [max_segments][]const u8 = undefined;
     const pattern_count = splitSegments(pattern, &pattern_segments);
