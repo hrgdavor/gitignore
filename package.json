@@ -1,6 +1,6 @@
 {
   "name": "@hrg/gitignore",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "git's .gitignore (wildmatch) semantics: one matcher, shared by the Zig, JavaScript and Java ports.",
   "license": "LicenseRef-GPL-3.0-with-Commons-Clause",
   "author": "Davor Hrg",
@@ -27,6 +27,8 @@
     "access": "public"
   },
   "scripts": {
-    "conformance": "bun js/conformance.mjs"
+    "conformance": "bun js/conformance.mjs",
+    "test": "bun test",
+    "java": "bun java/run.mjs"
   }
 }
