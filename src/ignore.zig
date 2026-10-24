@@ -49,7 +49,17 @@ const Chain = struct {
     /// Unanchored general globs: matched against the final segment (or any segment, for directory-only).
     wilds: []RuleEntry = &.{},
     /// Rules that carry a path (`x/**`, `a/**/b`): matched against the whole path and its prefixes.
+    /// Anchored literal rules are not here; `literal_dirs` answers the directory-only ones, and the rest are
+    /// a plain `pat` whose one path comparison is cheaper than an index walk.
     anchored: []RuleEntry = &.{},
+    /// Directory-only anchored literal rules, keyed by their literal path. A `foo/bar/` rule can only match a
+    /// path whose first two segments are exactly `foo/bar`, so the decision asks each prefix it might match
+    /// instead of testing every rule. This is what removes the "all 100 rules share the first segment `java`"
+    /// case: the prune cannot reject them, and a `(depth, literal)` lookup rejects them with one comparison.
+    literal_dirs: std.StringHashMapUnmanaged(usize) = .{},
+    /// Bit `d` is set when some directory-only anchored literal rule has `d` segments. A path of fewer
+    /// segments than a rule's depth can never match it, so those depths cost no lookup at all.
+    literal_dir_mask: u256 = 0,
 
     fn decide(self: Chain, path: []const u8, base: []const u8, is_dir: bool) ?bool {
         var best: ?usize = null;
@@ -68,6 +78,31 @@ const Chain = struct {
             }
             if (last_segment) break;
             start = slash + 1;
+        }
+
+        // The directory-only anchored literal rules, by the depth they are anchored at. A literal pattern can
+        // only match the path prefix of exactly its own depth, so a chain with 100 such rules costs one map
+        // lookup per depth that holds a rule — not 100 rule tests — and a depth the path cannot reach costs
+        // nothing. The same lookup also rejects a rule whose literal is not a prefix, which is the case the
+        // first-segment prune cannot see (`java/fory-0/...` and `java/fory-1/...` share their first segment).
+        if (self.literal_dir_mask != 0) {
+            var depth: usize = 0;
+            var cursor: usize = 0;
+            while (cursor <= path.len) {
+                const slash = std.mem.indexOfScalarPos(u8, path, cursor, '/') orelse path.len;
+                depth += 1;
+                const last_segment = slash == path.len;
+                if (last_segment and !is_dir) break;
+                if (depth < 256 and
+                    (self.literal_dir_mask & (@as(u256, 1) << @intCast(depth))) != 0)
+                {
+                    if (self.literal_dirs.get(path[0..slash])) |at| {
+                        if (best == null or at < best.?) best = at;
+                    }
+                }
+                if (last_segment) break;
+                cursor = slash + 1;
+            }
         }
 
         for (self.suffixes) |entry| {
@@ -157,6 +192,16 @@ fn dirOf(rel_path: []const u8) []const u8 {
     const slash = std.mem.lastIndexOfScalar(u8, rel_path, '/') orelse return "";
     return rel_path[0..slash];
 }
+
+/// The number of `/`-separated segments in a rule's literal glob — the depth at which the literal can match a
+/// path prefix. Only literal globs are indexed; a glob with a wildcard has no single depth to key on.
+fn patternDepth(glob: []const u8) usize {
+    var depth: usize = 1;
+    for (glob) |byte| if (byte == '/') {
+        depth += 1;
+    };
+    return depth;
+}
 pub const Stack = struct {
     arena: std.mem.Allocator,
     io: std.Io,
@@ -196,6 +241,7 @@ pub const Stack = struct {
         while (it.next()) |entry| {
             entry.value_ptr.*.literals.deinit(self.arena);
             entry.value_ptr.*.literals_dir_only.deinit(self.arena);
+            entry.value_ptr.*.literal_dirs.deinit(self.arena);
             self.arena.free(entry.value_ptr.*.suffixes);
             self.arena.free(entry.value_ptr.*.wilds);
             self.arena.free(entry.value_ptr.*.anchored);
@@ -376,7 +422,19 @@ pub const Stack = struct {
                         const map = if (rule.directory_only) &chain.literals_dir_only else &chain.literals;
                         if (!map.contains(rule.glob)) try map.put(self.arena, rule.glob, position);
                     } else if (rule.anchored) {
-                        try anchored.append(self.arena, .{ .rule = rule, .at = position });
+                        // A directory-only anchored literal is a whole prefix directory, so it is indexed by
+                        // that literal instead of joining the scanned list. An exact anchored literal stays in
+                        // the list: a chain holds one or two of them, and one comparison beats an index walk.
+                        // A pattern with 256 or more segments also stays: the mask cannot address it, and
+                        // correctness comes first for a shape no real `.gitignore` has.
+                        const depth = if (rule.kind == .literal) patternDepth(rule.glob) else 0;
+                        if (rule.kind == .literal and rule.directory_only and depth < 256) {
+                            const entry = try chain.literal_dirs.getOrPut(self.arena, rule.glob);
+                            if (!entry.found_existing) entry.value_ptr.* = position;
+                            chain.literal_dir_mask |= @as(u256, 1) << @intCast(depth);
+                        } else {
+                            try anchored.append(self.arena, .{ .rule = rule, .at = position });
+                        }
                     } else if (rule.kind == .suffix) {
                         try suffixes.append(self.arena, .{ .suffix = rule.suffix, .at = position });
                     } else {

@@ -171,3 +171,30 @@ backtrack 110.6 ms and deep 29.7 ms, matching. Verdicts are byte-identical on al
 13.8 ms directory-key hash would fall to a last-directory memo.
 
 The parity claim above is not a one-off measurement: `bun scripts/check-verdicts.mjs` is the committed gate that runs all three implementations over the six workloads and compares 10,000 verdicts byte for byte, naming the first differing line and exiting non-zero. It treats a missing binary as a failure, not a skip.
+## Doublestar: 8.99x from an anchored-literal bucket
+
+The previous section left doublestar as 48% of the reference's total, with the note that its 100 anchored literal rules all
+share the first segment `java`, so a first-segment prune rejects none of them. Measured: 120.3 rule tests per decision, of which
+**101 anchored literals**, 100 of them anchored at depth 6, costing 398.5 memcmps and 0 glob calls — while the paths reaching the
+chain are depth 5, because the 400 paths under an excluded `generated/` are answered by the ancestor cache before any rule is
+tested. The work was real and entirely avoidable.
+
+Anchored directory-only literals now live in `Chain.literal_dirs`, keyed by the full literal path and grouped by segment depth
+(`literal_dir_mask`, u256), consulted before the suffix/wild/anchored scans. Exact anchored literals stay scanned — indexing them
+regressed `deep`, one per chain. There is no suffix bucket: doublestar has zero anchored-general tests, and backtrack's only
+anchored glob ends `*.g4`, not a literal suffix.
+
+| workload                       | before ms                | after ms                                |
+| ------------------------------ | -----------------------: | --------------------------------------: |
+| **doublestar**                 | **135.4**                | **15.1** (8.99x)                        |
+| anchored                       | 15.3                     | 9.3                                     |
+| flat / deep / dirs / backtrack | 1.7 / 21.3 / 3.0 / 104.9 | 1.9 / 23.1 / 1.7 / 107.2 (within noise) |
+| total                          | 281.6                    | **158.2 (1.78x)**                       |
+
+Repeats put doublestar at 8.2-9.0x and the total at 1.78-1.85x; a 100-round control confirmed `deep` 0.98x and `backtrack` 0.99x,
+i.e. the small movers are noise. Correctness is the committed gate: `bun scripts/check-verdicts.mjs` reports 6/6 workloads and
+10,000 byte-identical verdicts, plus a differential fuzz of 80,000 decisions over 2,000 random multi-file stacks against the
+untouched naive path.
+
+**What is left**: backtrack is now about two-thirds of the total (~105 ms) and is dominated by the segment-DP `**` matcher, not by
+rule scanning. Doublestar's remaining ~15 ms is directory-state and chain lookup.
