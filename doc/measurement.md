@@ -141,3 +141,31 @@ what exercises the memo's invalidation rather than assuming it.
 **What is left**: 87% of the residual is the direct rule scan, and the remaining lever is Zig's rule-chain index
 (`**/x` -> basename suffix, literal/suffix/anchored classes, first-segment prune). It is unstarted, and it now owns a much
 smaller absolute number than it would have before this change.
+## The Zig reference gets the same treatment: 3.81x
+
+After the ports were fixed by memoising ancestors, the reference was measured for the first time. The split of `ignore.Stack.decide`
+across the six workloads (1,123 ms total): **chain resolution — the upward walk that finds the deepest `.gitignore` — 548 ms
+(49%)**, ancestor memo walk 295 ms (26%), per-rule matching 237 ms (21%), ancestor re-decisions 26 ms (2%). Rules per path were
+already indexed (5 flat, 19 deep, 98 doublestar, 17 anchored, 45 backtrack), so a rule index could only reach the 21%.
+
+The index: a per-directory `DirState` (directory -> resolved chain, plus the inherited ancestor-excluded flag). One hash per path
+replaces both upward walks; misses keep the old semantics, and a `dirname` guard preserves the historical answer for
+out-of-contract paths.
+
+| workload      | before ms | after ms  | speed-up            |
+| ------------- | --------: | --------: | ------------------: |
+| flat          | 4.3       | 1.4       | ~3x (process floor) |
+| deep          | 111.8     | 24.7      | 4.5x                |
+| doublestar    | 142.0     | 136.1     | 1.04x (noise)       |
+| anchored      | 18.7      | 15.0      | 1.25x               |
+| dirs          | 5.1       | 3.2       | 1.6x                |
+| **backtrack** | **799.4** | **103.2** | **7.7x**            |
+| total         | **1,081** | **284**   | **3.81x**           |
+
+Paired alternating runs, min of 9, `--rounds 12`; three sessions reproduced 3.73-3.87x. An independent re-run here measured
+backtrack 110.6 ms and deep 29.7 ms, matching. Verdicts are byte-identical on all six workloads, and a differential fuzz of
+`decide` against the untouched `decideNaive` found 0 disagreements over 6,000 decisions on 300 random multi-file stacks.
+
+**What is left**: doublestar is now 48% of the remaining total, and its 100 anchored literal rules share the first segment
+`java`, so a first-segment prune rejects none of them; an anchored-literal bucket keyed by depth is the next lever. Backtrack's
+13.8 ms directory-key hash would fall to a last-directory memo.

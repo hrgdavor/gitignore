@@ -23,6 +23,21 @@ const gitignore = @import("gitignore.zig");
 const SuffixEntry = struct { suffix: []const u8, at: usize };
 const RuleEntry = struct { rule: gitignore.Rule, at: usize };
 
+/// The two facts a path's decision needs about the path's **directory**, both fixed while this stack's rules
+/// are loaded: the flattened matcher that governs it, and whether it (or one of its ancestors) is excluded.
+///
+/// They are answered together because finding either one means walking up the directory tree — the chain
+/// through the `.gitignore` lookups, the ancestor answer through the chain of every level — and a path list
+/// asks about the same directories over and over. One cached answer replaces both walks for every entry.
+const DirState = struct {
+    /// `null` when no `.gitignore` from the root down to this directory has a rule.
+    chain: ?*Chain,
+    /// Whether this directory or one of its ancestors, each decided through the chain of *its own* parent, is
+    /// excluded. git never enters such a directory, so everything below it is excluded before its own rules
+    /// are consulted — and a negation below it can never re-include anything.
+    ancestor_excluded: bool,
+};
+
 /// One flattened matcher for a directory: every `.gitignore` that governs it, in precedence order.
 const Chain = struct {
     /// Deepest file first, each file reversed. An anchored rule `glob` is already scoped to the root.
@@ -134,6 +149,14 @@ fn baseName(path: []const u8) []const u8 {
     const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return path;
     return path[slash + 1 ..];
 }
+
+/// The directory part of a `/`-separated path: everything before its last slash, `""` at the root. For a path
+/// in the contract — `/`-separated, no leading or trailing slash — this is exactly `std.fs.path.dirname`, and
+/// it is the string the old ancestor walk's largest prefix ended at.
+fn dirOf(rel_path: []const u8) []const u8 {
+    const slash = std.mem.lastIndexOfScalar(u8, rel_path, '/') orelse return "";
+    return rel_path[0..slash];
+}
 pub const Stack = struct {
     arena: std.mem.Allocator,
     io: std.Io,
@@ -151,9 +174,9 @@ pub const Stack = struct {
     /// The same, for the absolute directory a root-relative `decide` asks a chain about. A three-valued
     /// decision walks the ancestors, so this is hit once per level per path and must not allocate.
     path_scratch: std.ArrayListUnmanaged(u8) = .empty,
-    /// Whether a root-relative directory is excluded, keyed by that directory. A path list visits the same
-    /// directories many times, and the answer cannot change while this snapshot of the rules is loaded.
-    excluded_dirs: std.StringHashMapUnmanaged(bool) = .{},
+    /// What a decision needs to know about its path's directory, keyed by that directory. A path list visits the
+    /// same directories many times, and the rules are a snapshot, so both facts cannot change under this stack.
+    dir_states: std.StringHashMapUnmanaged(DirState) = .{},
     /// The same cache for `decideNaive`, kept apart so the two implementations cannot hide a disagreement.
     excluded_dirs_naive: std.StringHashMapUnmanaged(bool) = .{},
 
@@ -167,7 +190,7 @@ pub const Stack = struct {
         self.checked.deinit(self.arena);
         self.scratch.deinit(self.arena);
         self.path_scratch.deinit(self.arena);
-        self.excluded_dirs.deinit(self.arena);
+        self.dir_states.deinit(self.arena);
         self.excluded_dirs_naive.deinit(self.arena);
         var it = self.chains.iterator();
         while (it.next()) |entry| {
@@ -214,31 +237,45 @@ pub const Stack = struct {
         return chain.decide(self.scratch.items, name, is_dir) orelse false;
     }
 
-    /// What the chain decides about `rel_path`, a `/`-separated path relative to the stack's root.
+    /// What the chain decides about `rel_path`, a `/`-separated path relative to the stack's root and, as
+    /// `Rules.decide` documents, with no leading or trailing slash.
     ///
     /// `true` means excluded, `false` means the deepest file with an opinion re-includes it, and `null` means
     /// no `.gitignore` has an opinion — which is **not** "included", because the caller may have a default.
     ///
     /// An excluded **ancestor directory** excludes the path below it, because git never enters the directory:
-    /// no rule inside it can re-include anything. That is why the ancestors are asked first, each through the
-    /// chain of *its own* parent (a file inside a directory does not govern the directory itself).
+    /// no rule inside it can re-include anything. Both that question and the path's chain are properties of the
+    /// path's directory, so they are answered once per directory by `dirState` and then cost one lookup — the
+    /// ancestor walk and the upward rules-file walk used to be repeated for every path.
     pub fn decide(self: *Stack, rel_path: []const u8, is_dir: bool) !?bool {
         if (!self.respect) return null;
-        var index: usize = 0;
-        while (index < rel_path.len) : (index += 1) {
-            if (rel_path[index] != '/') continue;
-            if (try self.ancestorExcluded(rel_path[0..index])) return true;
-        }
-        return self.decideOne(rel_path, is_dir);
+        const dir = dirOf(rel_path);
+        const state = try self.dirState(dir);
+        if (state.ancestor_excluded) return true;
+        // `dirOf` is `dirname` for every path in the contract. A path outside it keeps the historical answer,
+        // which looked the chain up by `dirname`, so the index cannot change a decision already being made.
+        const dirname = std.fs.path.dirname(rel_path) orelse "";
+        if (dirname.len != dir.len) return self.decideOne(rel_path, is_dir);
+        const chain = state.chain orelse return null;
+        if (chain.items.len == 0) return null;
+        return chain.decide(rel_path, baseName(rel_path), is_dir);
     }
 
-    /// Whether the directory at `rel_dir` is excluded, answered once per directory. A directory visited by
-    /// many paths is decided once; the rules are a snapshot, so the answer cannot change under this stack.
-    fn ancestorExcluded(self: *Stack, rel_dir: []const u8) !bool {
-        if (self.excluded_dirs.get(rel_dir)) |excluded| return excluded;
-        const excluded = (try self.decideOne(rel_dir, true)) orelse false;
-        try self.excluded_dirs.put(self.arena, try self.arena.dupe(u8, rel_dir), excluded);
-        return excluded;
+    /// The chain and ancestor answer for `rel_dir`, computed once per directory and answered from the map after
+    /// that. The ancestor answer is inherited: a directory is excluded when its parent is, or when its own
+    /// decision through the parent's chain excludes it — which is exactly the prefix set the old walk asked.
+    fn dirState(self: *Stack, rel_dir: []const u8) !DirState {
+        if (self.dir_states.get(rel_dir)) |state| return state;
+        var state: DirState = .{ .chain = null, .ancestor_excluded = false };
+        if (rel_dir.len > 0) {
+            const parent_state = try self.dirState(dirOf(rel_dir));
+            state.ancestor_excluded = parent_state.ancestor_excluded or
+                ((try self.decideOne(rel_dir, true)) orelse false);
+        }
+        // An excluded directory is never entered, so no rule below it can matter and its chain is not resolved.
+        if (!state.ancestor_excluded) state.chain = try self.chainForRel(rel_dir);
+        try self.dir_states.put(self.arena, try self.arena.dupe(u8, rel_dir), state);
+        return state;
     }
 
     fn ancestorExcludedNaive(self: *Stack, rel_dir: []const u8) !bool {
