@@ -169,3 +169,5 @@ backtrack 110.6 ms and deep 29.7 ms, matching. Verdicts are byte-identical on al
 **What is left**: doublestar is now 48% of the remaining total, and its 100 anchored literal rules share the first segment
 `java`, so a first-segment prune rejects none of them; an anchored-literal bucket keyed by depth is the next lever. Backtrack's
 13.8 ms directory-key hash would fall to a last-directory memo.
+
+The parity claim above is not a one-off measurement: `bun scripts/check-verdicts.mjs` is the committed gate that runs all three implementations over the six workloads and compares 10,000 verdicts byte for byte, naming the first differing line and exiting non-zero. It treats a missing binary as a failure, not a skip.

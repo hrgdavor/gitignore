@@ -379,3 +379,14 @@ Requirements, learned from a project of this author's that publishes this way (`
 
 Afterwards, `fs-meta` resolves `hr.hrg:gitignore` from the repository like any other artifact; it no longer needs the local
 `mvn install`.
+## Checks
+
+```text
+bun scripts/check-verdicts.mjs         # the three implementations agree, byte for byte
+bun scripts/check-verdicts.mjs --json  # one NDJSON object per workload
+```
+
+The 34 conformance vectors say what the matcher must decide; this says that the three implementations decide the *same thing*
+on the six bench workloads — 10,000 verdicts, compared byte for byte, with the first differing line named on failure. A missing
+binary is exit 2 with the build command, never a skip. It exists because twice in this project's history "the vectors pass" was
+mistaken for "the ports agree", and the comparison had been run by hand in scratch files that were never committed.

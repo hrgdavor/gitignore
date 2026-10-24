@@ -34,3 +34,7 @@ jobs:
       # The Java port compiles itself with javac, so no Maven and no test framework: bun java/run.mjs is the gate.
       - name: Java port against the vectors
         run: bun java/run.mjs
+
+      # The vectors say what to decide; this says the three ports decide the same thing on real workloads.
+      - name: Three ports agree on the bench workloads
+        run: zig build && bun scripts/check-verdicts.mjs
