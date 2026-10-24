@@ -260,23 +260,23 @@ The three JS columns are **the same vectors, the same port, three matching strat
   which is a pattern with `**` where the regex happened to be fast. That row is the open tuning question, not a settled
   result.
 
-The Java port still runs the full DP (4397 ms total, `backtrack` 3205 ms, `anchored` and `doublestar` regressed against its
-regex version). The same hybrid applies to it and is the next step; the numbers above are why it should be measured per
-workload rather than by the total.
-
+Both ports now run the same segment DP as the reference, with the ancestor memoisation that took them from 17x and 11x behind
+Zig to about 1.6x and 2.2x at the time it was measured - and the reference has since become roughly 10x faster than it started,
+so the relative gap moved again. The current numbers, the method, and every improvement (including what was measured and
+refuted) are in [doc/performance/](doc/performance/README.md) and [doc/measurement.md](doc/measurement.md).
 ### How these numbers are produced
 
 Cold-process runs, with start-up measured separately and subtracted. That is the honest number for a CLI and it is
-also noisy: the same Java build has reported `backtrack` at 3205 ms and 5129 ms. [+doc/measurement.md](doc/measurement.md)](doc/measurement.md) records the two measurement modes, the steady-state table (12 rounds inside one process) and every
+also noisy: the same Java build has reported `backtrack` at 3205 ms and 5129 ms. [doc/measurement.md](doc/measurement.md) records the two measurement modes, the steady-state table (12 rounds inside one process) and every
 strategy tried on the Java port with what it cost. The Java column above predates the literal-segment fast path.
 
 ### Two caveats
 
 - The runner measures a process; the start-up column is a subtraction, and on a loaded machine it is a noisy one. The
   large rows are far outside that noise; the small ones are not.
-- The ports are young. Their remaining distance to Zig is a design difference, not tuning: Java has not adopted the DP, and
-  neither port has the Zig implementation's per-chain indexing.
-
+- The ports are no longer "young" in the sense that mattered: the Java port adopted the segment DP, then literal segments, then
+  the ancestor memoisation, and the JS port did the same. What remains is the reference's own head start - it has three indexes
+  the ports do not have, and [doc/performance/shared.md](doc/performance/shared.md) is the list a new port should work through.
 ## Running the three
 
 ```text

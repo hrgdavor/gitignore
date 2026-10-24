@@ -198,3 +198,27 @@ untouched naive path.
 
 **What is left**: backtrack is now about two-thirds of the total (~105 ms) and is dominated by the segment-DP `**` matcher, not by
 rule scanning. Doublestar's remaining ~15 ms is directory-state and chain lookup.
+## Backtrack: a last-segment precheck, and the memo that was refuted
+
+The doublestar section left backtrack as two-thirds of the total. Its split (102.1 ms): DP rows 42.6 (41.7%), pattern+path
+splitting 22.6 (22.1%), chain literal scan 22.2 (21.8%), chain lookup 14.6 (14.3%). No (pattern, path) pair is recomputed within
+a decision, so a DP memo cannot fire; a **last-directory memo was measured and refuted** (13.2 ms to compare against 13.7 ms to
+map-get, and it regressed `deep` 15.7 -> 18.6), as was a first-byte bitmap (+0.9 ms). Both were removed rather than kept.
+
+Kept: a **last-segment precheck** in `globMatch` (a non-`**` final pattern segment must match the path's final segment, so
+`src/**/.../*.g4` against `File.java` never splits anything or enters the DP - DP+split were 65% of the cost), and a manual
+`nextSeparator` replacing `std.mem.indexOfScalarPos` (3.66 ms against 20.4 ms over the same paths, which also helps `deep` and
+`doublestar`).
+
+  backtrack 101.6 -> 28.4 ms (3.58x), total 128.7 -> 50.8 ms (2.53x), no workload regressed
+
+The differential fuzz found a genuine bug that the vectors did not cover: an unanchored literal matched non-final segments, so
+`!a` re-included `d/a/build`. It now matches only the final segment, which is what git does and what both ports did.
+
+### A note on the totals, because three exist for the same build
+
+The same commit has been reported at 50.8 ms (the track's paired minimum), 83.8-86.1 ms (an independent 12-round re-run with
+start-up subtracted) and 108.1 ms (a single process-level run). That is a ~2x spread, not the ~13% claimed elsewhere in this
+document, and it comes from what is being timed: the min-of-9 paired protocol, a single 12-round run, and a full process with
+start-up. **The comparable number is the paired minimum from one session, and comparisons must stay inside one session** - the
+tables above are all paired, but a total quoted from a different protocol is not comparable with them.

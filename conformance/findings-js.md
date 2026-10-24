@@ -8,7 +8,7 @@ The JS matcher (`js/gitignore.mjs`, moved unchanged from `fs-meta/js/`) is run a
 | a CRLF rule file parses like an LF one                    | exclude    | no-opinion | the parser split on `\n` and left the `\r` on every pattern, so `*.log\r` matched nothing | **fixed** |
 | a character class with a closing bracket first (`[]]x`)   | exclude    | no-opinion | the class parser took the first `]` after the opener as the terminator                    | **fixed** |
 | an unterminated class (`[abc`)                            | no-opinion | exclude    | it treated the class as a literal `[`, and its own comment said "like git"; git's `wildmatch` aborts the whole pattern | **fixed** |
-| a negation cannot re-include inside an excluded directory | exclude    | include    | `decide` answers for one path and never asks its ancestors, so `build/` + `!build/x.log` returns include where a walker would never enter `build` | **open** |
+| a negation cannot re-include inside an excluded directory | exclude    | include    | `decide` answers for one path and never asks its ancestors, so `build/` + `!build/x.log` returns include where a walker would never enter `build` | **fixed** |
 
 ## The last case fixed, and why it took three attempts
 
