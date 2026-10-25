@@ -394,6 +394,8 @@ this change.
 ---
 ## Rejected: bit-parallel DP for `**` (measured 2026-10-25)
 
+The full record — mechanism, prototype numbers, the git-oracle results, the arithmetic that settled it, and the checklist for revisiting it or a variation — is in [rejected-bit-parallel-dp.md](rejected-bit-parallel-dp.md). What follows is the summary.
+
 The idea: represent the reachable path positions as a `u64` bitmask, one mask per pattern segment, with `**` advancing by a
 `log2(n)`-step prefix closure (`x |= x << 1; x |= x << 2; ...`) instead of looping over positions. It is the standard way to make
 `**` cheap, and it was measured before anything was written.

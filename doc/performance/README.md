@@ -206,3 +206,21 @@ The single most useful thing this directory records is methodological, and every
 - **A stable measurement harness.** Item 5 of "How to read these numbers" is a defect in the method, not in the code: the
   same build has three totals. A harness that interleaves the configurations in one run and reports the paired
   difference would make every future entry in this directory cheaper to establish.
+
+## What was rejected, and why it is written down
+
+A measurement that ends in "no" is worth as much as one that ends in a speedup, if it is written where the next person will
+look. Each rejection carries the numbers that decided it and the conditions that would reopen it.
+
+- [rejected-bit-parallel-dp.md](rejected-bit-parallel-dp.md) — a bitmask DP with a `log2` prefix closure for `**`: ceiling
+  0 % / 2.2 % / 4.9 % per port, prototype 1.21× on real pairs, net **0.9 %** of Java's total. Includes the checklist for
+  revisiting it and the variations that could still pay.
+- Refuted ideas recorded in [shared.md](shared.md), each with the number that killed it: the "two or more `**`" DP criterion
+  (15.6 s against 12.4 s — worse than always using the DP); a DP memo per (pattern, path) (no pair is ever recomputed, so it
+  cannot fire); a first-byte literal bitmap (+0.9 ms); a last-directory memo (no gain, and it regressed `deep`); string
+  interning of directory keys (negative once measured, because the map hashes the same string either way); and a tri-state for
+  Java's per-decision `Optional<Boolean>` (11.4 % *worse* — the JIT already scalar-replaces it).
+
+The pattern behind the list is the same every time: a plausible optimisation is measured against a baseline worktree, in paired
+alternating runs, and it stays only if it clears the ~13 % noise floor. Two of the six above were reverted by their own numbers,
+which is the point of writing them down.
