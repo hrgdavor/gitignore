@@ -14,7 +14,9 @@
 //!    the first non-`null`.
 //!
 //! Excluded directories are not listed and not entered — that is git's rule, and it is what makes the stack safe:
-//! because the engine never enters one, no rule inside it can ever re-include anything.
+//! because the engine never enters one, no rule inside it can ever re-include anything. Both entry points stop at
+//! the first excluded ancestor for the same reason: `decide` inherits that fact in `dirState`, and `ignored` asks
+//! it, so a single path is answered the way `git check-ignore` answers it even when the caller was not the walker.
 
 const std = @import("std");
 const gitignore = @import("gitignore.zig");
@@ -308,13 +310,36 @@ pub const Stack = struct {
         }
     }
 
-    /// Whether the child `name` of `dir_path` is visible to the engine under the `.gitignore` files that govern it.
+    /// Whether the child `name` of `dir_path` is excluded — the walker-shaped form of `decide`, and the
+    /// question `git check-ignore` answers for `dir_path/name`.
+    ///
     /// `dir_path` is an OS path (the root joined with the relative directory), as the lister receives it.
+    ///
+    /// The answer is the first excluded prefix on the way down from the root: `dir_path` itself or any
+    /// ancestor. That is git's pruning rule, and it is why a negation below an excluded directory can never
+    /// re-open a path: git never enters the directory, so a rule written inside it is never consulted — and a
+    /// negation written in a shallower file cannot re-open it either, because the excluded ancestor decides.
+    /// When no prefix is excluded, the path's own decision is the parent directory's chain, so a negation
+    /// inside a directory that *is* entered still re-includes exactly as `decide` says.
+    ///
+    /// Both halves are the `dirState` facts: the inherited `ancestor_excluded` flag and the parent's
+    /// flattened chain. The cache is keyed by the root-relative directory, never by the queried name, so a
+    /// question about a path populates only facts about its directory — a later `decide`, a sibling, or a
+    /// shallower path gets the same answer it would have got first. The ancestor answer is inherited while
+    /// the entry is built, so one first visit fills every level above it and every later entry in that
+    /// directory (or below it) costs one lookup.
     pub fn ignored(self: *Stack, dir_path: []const u8, name: []const u8, is_dir: bool) !bool {
         if (!self.respect) return false;
-        const chain = (try self.chainFor(dir_path)) orelse return false;
-        if (chain.items.len == 0) return false;
         const rel_dir = self.relOf(dir_path);
+        const state = try self.dirState(rel_dir);
+        // An excluded directory is never entered, so every name below it is excluded and no rule inside it
+        // can matter. This is the answer `decide` already gave for `out/x`; the walker-shaped form used to
+        // miss it because it asked only the deep chain about the final segment.
+        if (state.ancestor_excluded) return true;
+        // `dirState` did not resolve a chain for an excluded directory, so a non-excluded one always has
+        // the chain its own names are decided against.
+        const chain = state.chain orelse return false;
+        if (chain.items.len == 0) return false;
         self.scratch.clearRetainingCapacity();
         if (rel_dir.len > 0) {
             try self.scratch.appendSlice(self.arena, rel_dir);
@@ -635,4 +660,174 @@ test "a nested file's rule cannot match a segment above that file" {
     try testing.expectEqual(@as(?bool, null), try stack.decideNaive("a/x", false));
     try testing.expectEqual(@as(?bool, true), try stack.decide("a/a", true));
     try testing.expectEqual(@as(?bool, true), try stack.decideNaive("a/a", true));
+}
+
+/// One `.gitignore` below the root: a directory (relative to the root) and the rules it holds.
+const NestedRuleFile = struct { dir: []const u8, rules: []const u8 };
+
+/// One row of the `git check-ignore` matrix. `excluded` is what real `git check-ignore -q --no-index`
+/// answered for `path` in a temporary repository (the scratch matrix that produced these rows is
+/// `.tmp/oracle/oracle.mjs`; it writes the tree, asks git, and asks `ignored` the same question).
+const IgnoredMatrixCase = struct {
+    name: []const u8,
+    /// The root `.gitignore`. Empty means the root has no rule file.
+    root_rules: []const u8 = "",
+    /// Deeper `.gitignore` files, written after the root's.
+    nested: []const NestedRuleFile = &.{},
+    /// Root-relative, `/`-separated.
+    path: []const u8,
+    is_dir: bool,
+    /// git's `check-ignore` answer: true = excluded (exit 0), false = not excluded (exit 1).
+    excluded: bool,
+};
+
+// Every row of the git matrix, grouped by the rule shape it pins. `ignored` must answer each exactly as
+// git does, and `decide` must agree with it: the two are one question asked in two shapes, and the walker
+// uses the first while the vectors and the bench use the second.
+test "ignored agrees with git check-ignore on the excluded-ancestor matrix" {
+    const testing = std.testing;
+    const io = testing.io;
+    const cases = [_]IgnoredMatrixCase{
+        // A dir-only unanchored rule matching the directory's own name, and paths inside that directory.
+        .{ .name = "out/ matches the directory", .root_rules = "out/\n", .path = "out", .is_dir = true, .excluded = true },
+        .{ .name = "out/ excludes a file inside it", .root_rules = "out/\n", .path = "out/x", .is_dir = false, .excluded = true },
+        .{ .name = "out/ excludes a dir inside it", .root_rules = "out/\n", .path = "out/x", .is_dir = true, .excluded = true },
+        .{ .name = "out/ excludes a deep path inside it", .root_rules = "out/\n", .path = "out/a/b/c", .is_dir = false, .excluded = true },
+        .{ .name = "out/ does not match a file named out", .root_rules = "out/\n", .path = "out", .is_dir = false, .excluded = false },
+        .{ .name = "out/ does not match a nested file named out", .root_rules = "out/\n", .path = "a/out", .is_dir = false, .excluded = false },
+        // An unanchored dir-only rule whose match is an ancestor, at any depth.
+        .{ .name = "build/ matches an ancestor directory", .root_rules = "build/\n", .path = "a/build", .is_dir = true, .excluded = true },
+        .{ .name = "build/ excludes a path below an ancestor", .root_rules = "build/\n", .path = "a/build/x", .is_dir = false, .excluded = true },
+        .{ .name = "build/ excludes a deep path below an ancestor", .root_rules = "build/\n", .path = "a/build/b/c", .is_dir = false, .excluded = true },
+        // A negated rule inside an excluded directory: git never enters it, so nothing there re-includes.
+        .{ .name = "!out/keep.txt cannot re-include", .root_rules = "out/\n!out/keep.txt\n", .path = "out/keep.txt", .is_dir = false, .excluded = true },
+        .{ .name = "!out/keep.txt leaves out/x ignored", .root_rules = "out/\n!out/keep.txt\n", .path = "out/x", .is_dir = false, .excluded = true },
+        .{ .name = "nested out/.gitignore cannot re-include", .root_rules = "out/\n", .nested = &.{.{ .dir = "out", .rules = "!keep.txt\n" }}, .path = "out/keep.txt", .is_dir = false, .excluded = true },
+        .{ .name = "!out/ re-includes the directory", .root_rules = "out/\n!out/\n", .path = "out", .is_dir = true, .excluded = false },
+        .{ .name = "!out/ re-includes what is below it", .root_rules = "out/\n!out/\n", .path = "out/x", .is_dir = false, .excluded = false },
+        .{ .name = "!out/ re-includes a nested out", .root_rules = "out/\n!out/\n", .path = "a/out", .is_dir = true, .excluded = false },
+        .{ .name = "!out/ re-includes below a nested out", .root_rules = "out/\n!out/\n", .path = "a/out/x", .is_dir = false, .excluded = false },
+        // A negation inside a directory git does enter still works.
+        .{ .name = "a negation inside a non-excluded dir re-includes", .root_rules = "*.log\n", .nested = &.{.{ .dir = "src", .rules = "!keep.log\n" }}, .path = "src/keep.log", .is_dir = false, .excluded = false },
+        .{ .name = "a negation inside a non-excluded dir leaves a sibling", .root_rules = "*.log\n", .nested = &.{.{ .dir = "src", .rules = "!keep.log\n" }}, .path = "src/other.log", .is_dir = false, .excluded = true },
+        // An anchored directory rule.
+        .{ .name = "src/generated/ matches the directory", .root_rules = "src/generated/\n", .path = "src/generated", .is_dir = true, .excluded = true },
+        .{ .name = "src/generated/ excludes a file inside it", .root_rules = "src/generated/\n", .path = "src/generated/x", .is_dir = false, .excluded = true },
+        .{ .name = "src/generated/ excludes a deep path inside it", .root_rules = "src/generated/\n", .path = "src/generated/a/b", .is_dir = false, .excluded = true },
+        .{ .name = "src/generated/ does not exclude a sibling", .root_rules = "src/generated/\n", .path = "src/other/x", .is_dir = false, .excluded = false },
+        // An anchored literal that matches a directory (no trailing slash) excludes what is below it.
+        .{ .name = "an anchored literal directory rule excludes below it", .root_rules = "src/generated\n", .path = "src/generated/x", .is_dir = false, .excluded = true },
+        // Rules that match a file.
+        .{ .name = "*.log matches a root file", .root_rules = "*.log\n", .path = "a.log", .is_dir = false, .excluded = true },
+        .{ .name = "*.log matches a nested file", .root_rules = "*.log\n", .path = "d/a.log", .is_dir = false, .excluded = true },
+        .{ .name = "*.log does not match another extension", .root_rules = "*.log\n", .path = "d/a.txt", .is_dir = false, .excluded = false },
+        .{ .name = "a literal file rule matches", .root_rules = "gen.out\n", .path = "gen.out", .is_dir = false, .excluded = true },
+        .{ .name = "/target anchors to the root", .root_rules = "/target\n", .path = "target", .is_dir = false, .excluded = true },
+        .{ .name = "/target does not match a nested target", .root_rules = "/target\n", .path = "a/target", .is_dir = false, .excluded = false },
+        // An unanchored dir-only glob: the same ancestor rule, through the glob matcher.
+        .{ .name = "gen*/ matches a directory", .root_rules = "gen*/\n", .path = "generated", .is_dir = true, .excluded = true },
+        .{ .name = "gen*/ excludes a path below that directory", .root_rules = "gen*/\n", .path = "generated/x", .is_dir = false, .excluded = true },
+        // A literal without a trailing slash matches a directory as well as a file.
+        .{ .name = "build matches a directory", .root_rules = "build\n", .path = "a/build", .is_dir = true, .excluded = true },
+        .{ .name = "build excludes a path below it", .root_rules = "build\n", .path = "a/build/x", .is_dir = false, .excluded = true },
+        // `**/name/` normalises to an unanchored dir-only rule.
+        .{ .name = "**/out/ excludes a deep directory", .root_rules = "**/out/\n", .path = "a/out", .is_dir = true, .excluded = true },
+        .{ .name = "**/out/ excludes below a deep directory", .root_rules = "**/out/\n", .path = "a/out/x", .is_dir = false, .excluded = true },
+        // An exclusion declared in a nested file, asked about two or more levels below it.
+        .{ .name = "a/.gitignore b/ matches a nested directory", .nested = &.{.{ .dir = "a", .rules = "b/\n" }}, .path = "a/b", .is_dir = true, .excluded = true },
+        .{ .name = "a/.gitignore b/ excludes below it", .nested = &.{.{ .dir = "a", .rules = "b/\n" }}, .path = "a/b/x", .is_dir = false, .excluded = true },
+        .{ .name = "a/.gitignore b/ excludes a deep path below it", .nested = &.{.{ .dir = "a", .rules = "b/\n" }}, .path = "a/b/c/d", .is_dir = false, .excluded = true },
+        // A negation in a non-excluded directory re-includes a directory a shallower file excluded.
+        .{ .name = "src/.gitignore !out/ re-includes src/out", .root_rules = "out/\n", .nested = &.{.{ .dir = "src", .rules = "!out/\n" }}, .path = "src/out", .is_dir = true, .excluded = false },
+        .{ .name = "src/.gitignore !out/ re-includes below src/out", .root_rules = "out/\n", .nested = &.{.{ .dir = "src", .rules = "!out/\n" }}, .path = "src/out/x", .is_dir = false, .excluded = false },
+        .{ .name = "src/.gitignore !out/ does not re-include other/out", .root_rules = "out/\n", .nested = &.{.{ .dir = "src", .rules = "!out/\n" }}, .path = "other/out/x", .is_dir = false, .excluded = true },
+        // A shallow exclusion its own file re-includes leaves the subtree included.
+        .{ .name = "a/ then !a/ re-includes below a", .root_rules = "a/\n!a/\n", .path = "a/x", .is_dir = false, .excluded = false },
+        // A prefix that only looks like the excluded name is not excluded.
+        .{ .name = "out/ does not match output/", .root_rules = "out/\n", .path = "output/x", .is_dir = false, .excluded = false },
+        // A nested file's rule cannot match a segment above that file.
+        .{ .name = "a/.gitignore a/ does not exclude a/x", .nested = &.{.{ .dir = "a", .rules = "a/\n" }}, .path = "a/x", .is_dir = false, .excluded = false },
+        .{ .name = "a/.gitignore a/ excludes a/a", .nested = &.{.{ .dir = "a", .rules = "a/\n" }}, .path = "a/a", .is_dir = true, .excluded = true },
+        // A deeper negation cannot re-open a path below an ancestor excluded by a shallower file.
+        .{ .name = "src/ then src/.gitignore !sub/keep.txt", .root_rules = "sub/\n", .nested = &.{.{ .dir = "src", .rules = "!sub/keep.txt\n" }}, .path = "src/sub/keep.txt", .is_dir = false, .excluded = true },
+        // No opinion.
+        .{ .name = "an unmatched path is not ignored", .root_rules = "*.log\n", .path = "plain.txt", .is_dir = false, .excluded = false },
+    };
+
+    for (cases) |case| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        if (case.root_rules.len > 0) {
+            try tmp.dir.writeFile(io, .{ .sub_path = gitignore.file_name, .data = case.root_rules });
+        }
+        for (case.nested) |file| {
+            try tmp.dir.createDirPath(io, file.dir);
+            const sub_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ file.dir, gitignore.file_name });
+            defer testing.allocator.free(sub_path);
+            try tmp.dir.writeFile(io, .{ .sub_path = sub_path, .data = file.rules });
+        }
+
+        var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const count = try tmp.dir.realPath(io, &path_buffer);
+        const root = path_buffer[0..count];
+
+        var arena_alloc = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena_alloc.deinit();
+        const arena = arena_alloc.allocator();
+
+        // Exactly what a lister receives: the root joined with the path's directory, then the final name.
+        const dir_rel = dirOf(case.path);
+        const dir_path = if (dir_rel.len == 0)
+            try arena.dupe(u8, root)
+        else
+            try std.fmt.allocPrint(arena, "{s}/{s}", .{ root, dir_rel });
+
+        var stack = Stack.init(arena, io, root, true);
+        defer stack.deinit();
+
+        // `ignored` first (the shape the walker uses), then `decide` on the same stack: the second answer
+        // must not be a different one because the first populated a directory state.
+        try testing.expectEqual(case.excluded, try stack.ignored(dir_path, baseName(case.path), case.is_dir));
+        const decided = try stack.decide(case.path, case.is_dir);
+        try testing.expectEqual(case.excluded, decided orelse false);
+    }
+}
+
+test "asking about a path warms the directory cache without changing the next answer" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = gitignore.file_name, .data = "out/\n!out/\n" });
+
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const count = try tmp.dir.realPath(io, &path_buffer);
+    const root = path_buffer[0..count];
+
+    var arena_alloc = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
+    const excluded_child = try std.fmt.allocPrint(arena, "{s}/out", .{root});
+
+    // `!out/` re-includes the directory, so the child is not excluded either. Asking about the child
+    // first populates `out`'s state; asking about `out` and about a sibling must still get the same
+    // answers a fresh stack would give.
+    var ignored_first = Stack.init(arena, io, root, true);
+    defer ignored_first.deinit();
+    try testing.expect(!try ignored_first.ignored(excluded_child, "x", false));
+    try testing.expect(!try ignored_first.ignored(root, "out", true));
+    try testing.expectEqual(@as(?bool, null), try ignored_first.decide("out/x", false));
+    try testing.expectEqual(@as(?bool, false), try ignored_first.decide("out", true));
+    try testing.expectEqual(@as(?bool, null), try ignored_first.decide("plain.txt", false));
+    try testing.expect(!try ignored_first.ignored(root, "plain.txt", false));
+
+    // The reverse order: `decide` populates the same cache entries, and `ignored` must read them correctly.
+    var decide_first = Stack.init(arena, io, root, true);
+    defer decide_first.deinit();
+    try testing.expectEqual(@as(?bool, null), try decide_first.decide("out/x", false));
+    try testing.expectEqual(@as(?bool, false), try decide_first.decide("out", true));
+    try testing.expect(!try decide_first.ignored(excluded_child, "x", false));
+    try testing.expect(!try decide_first.ignored(root, "out", true));
+    try testing.expectEqual(@as(?bool, null), try decide_first.decide("out/x/y", false));
+    try testing.expect(!try decide_first.ignored(excluded_child, "y", false));
 }
