@@ -129,8 +129,12 @@ public final class GitIgnoreFile {
                 if (depth > deepest) {
                     deepest = depth;
                 }
-            } else {
+            } else if (rule.singleSegment()) {
                 unanchored.put(rule.literal(), index);
+            } else {
+                // A normalised `**` + `/x/y` directory rule is a path suffix: its base name is not a name it names, so
+                // the per-name index cannot answer it and it stays on the scanned path.
+                continue;
             }
             rules.set(index, rule.indexedCopy());
         }
@@ -190,15 +194,14 @@ public final class GitIgnoreFile {
      * {@code 2} for a {@code *.ext}-shaped tail.
      *
      * <p>Directory-only rules are never bucketed: their match can be an ancestor directory, whose base name is not
-     * the path's, so a base-name key would reject a path the rule really excludes. A plain unanchored name stays on
-     * the scan too — it is one compiled segment test and has no prefix to verify — and it is already answered by the
-     * unanchored-literal index.</p>
+     * the path's, so a base-name key would reject a path the rule really excludes. A non-directory-only rule whose
+     * last segment is a plain name is bucketed whether it is anchored or not: after the leading `**` + `/`
+     * normalisation, {@code **}{@code /target} is the unanchored {@code target}, whose base name is exactly the
+     * question, and {@code src/**}{@code /target} also requires a base of {@code target}. Letting the unanchored form
+     * into the bucket is what keeps {@code doublestar}'s eleven such rules a lookup instead of a scan entry.</p>
      */
     private static int bucketKind(Rule rule) {
         if (rule.directoryOnly()) {
-            return 0;
-        }
-        if (!rule.anchored() && rule.literal() != null) {
             return 0;
         }
         String tail = rule.lastSegment();
@@ -238,7 +241,7 @@ public final class GitIgnoreFile {
                 break;
             }
             Rule rule = rules.get(index);
-            if (parts == null) {
+            if (parts == null && rule.needsSegments()) {
                 if (rule.tailRejects(path)) {
                     continue;
                 }
@@ -394,17 +397,16 @@ public final class GitIgnoreFile {
                 }
             }
         }
-        // One split per decision, and only once a rule's last segment has accepted the raw path: on `backtrack`
-        // both DP rules end `*.class` / `*.g4` against `.java` paths, so the split that used to run before the
-        // precheck is never paid. A directory-only rule is the exception — its ancestor-prefix branch asks about a
-        // different segment, so its split is still paid.
+        // One split per decision, and only once a rule that needs it is reached: a literal or suffix rule is one
+        // string test on the raw path and never splits, and a glob rule's last segment is checked first, so on
+        // `backtrack` the two DP rules ending `*.class` / `*.g4` are rejected against `.java` paths before the split.
         String[] parts = null;
         for (int index = rules.size() - 1; index > best; index--) {
             Rule rule = rules.get(index);
             if (rule.indexed()) {
                 continue;
             }
-            if (parts == null) {
+            if (parts == null && rule.needsSegments()) {
                 if (rule.tailRejects(scoped)) {
                     continue;
                 }
@@ -444,13 +446,38 @@ public final class GitIgnoreFile {
         return path.endsWith(literal);
     }
 
-    /** One pattern: its polarity, whether it is directory-only, and its compiled form. */
-    private record Rule(boolean negated, boolean directoryOnly, boolean anchored, String literal, boolean indexed,
-            String lastSegment, Glob.Segment[] segments) {
+    /** How a rule is answered: a literal compare, a suffix test, or the segment DP. */
+    private enum Kind { LITERAL, SUFFIX, GLOB }
+
+    /**
+     * One pattern: its polarity, whether it is directory-only, its class, and — for a general glob — its compiled
+     * segments.
+     *
+     * <p>The class is decided once, at parse time, because it decides the cost of every later test: a literal is a
+     * string compare, a suffix a {@link String#endsWith}, and only a glob reaches {@link Glob#matches}. The reference
+     * classifies the same three ways; before this the Java port sent every pattern through the DP, which is its 4.9%
+     * residual share ({@code doc/performance/rejected-bit-parallel-dp.md}).</p>
+     *
+     * <p>{@code singleSegment} is the other half of the classification: an unanchored pattern naming one component is
+     * a <em>base-name</em> rule, while one that still holds a separator is a <em>path-suffix</em> rule — the two forms
+     * a leading {@code **} + {@code /} normalises into. Git means both by "at any depth", and neither needs the DP.</p>
+     */
+    private record Rule(boolean negated, boolean directoryOnly, boolean anchored, boolean singleSegment,
+            boolean indexed, Kind kind, String literal, String suffix, String lastSegment,
+            Glob.Segment[] segments) {
 
         /** The same rule, marked as answered by one of the file's indexes rather than scanned. */
         Rule indexedCopy() {
-            return new Rule(negated, directoryOnly, anchored, literal, true, lastSegment, segments);
+            return new Rule(negated, directoryOnly, anchored, singleSegment, true, kind, literal, suffix,
+                    lastSegment, segments);
+        }
+
+        /** Whether this rule needs the path split: only a general glob asks segment by segment. */
+        boolean needsSegments() {
+            // A directory-only single-component rule asks its own base name (`matchesName`), which is one compiled
+            // segment and no split. Every other glob rule asks the DP: an unanchored multi-segment one for its path
+            // suffix, an anchored one against the first `count` segments of the prefix.
+            return kind == Kind.GLOB && (anchored || !singleSegment || !directoryOnly);
         }
 
         /**
@@ -480,16 +507,61 @@ public final class GitIgnoreFile {
             if (line.isEmpty()) {
                 return null;
             }
-            // A plain name (no wildcard, no escape) is indexed rather than scanned; the directory-only ones are what
-            // a per-path decision asks about most. The test is exactly the one Glob.Segment.of uses for "literal".
-            boolean plain = line.indexOf('*') < 0 && line.indexOf('?') < 0 && line.indexOf('[') < 0
-                    && line.indexOf('\\') < 0;
-            // The path is matched by the segment DP; only the per-segment regexes are compiled here, which is also
-            // where character classes and escapes are understood. The raw last segment is kept for the last-segment
-            // buckets, which need the string (a literal tail, or the `*.ext` shape to key by).
-            return new Rule(negated, directoryOnly, anchored, plain ? line : null, false,
+            // Zig normalises a leading `**` + `/` at parse time, and the DP measurement showed what it is worth: the
+            // DP calls stop existing. That prefix means "at any depth", which is what an unanchored pattern already
+            // means, so it can be dropped before anything is classified:
+            //
+            //   **/x       -> x       a base-name literal (and, for `x/`, a directory name)
+            //   **/*.ext   -> *.ext   a suffix rule, keyed by its extension in the last-segment bucket
+            //   **/x/y     -> x/y     a path-suffix rule: the whole path must end with `x/y`
+            //
+            // Only a *leading* `**` segment is dropped, and only when the rest holds no `**` segment of its own —
+            // `**/**/x`, `a/**/b`, `**/x/**/y` and every trailing `**` keep the DP, where their semantics live. The
+            // rule keeps its position in the file, so git's later-pattern-wins order is untouched: this changes how a
+            // rule is tested, never when it is consulted.
+            if (anchored && line.length() > 3 && line.startsWith("**/") && line.charAt(3) != '/'
+                    && !hasDoubleStarSegment(line.substring(3))) {
+                line = line.substring(3);
+                anchored = false;
+            }
+            boolean singleSegment = line.indexOf('/') < 0;
+            // A plain name (no wildcard, no escape) is a literal; the test is exactly the one Glob.Segment.of uses.
+            boolean plain = isPlain(line);
+            Kind kind;
+            String suffix = "";
+            if (plain) {
+                kind = Kind.LITERAL;
+            } else if (!anchored && line.length() >= 3 && line.charAt(0) == '*' && line.charAt(1) == '.'
+                    && isPlain(line.substring(1))) {
+                // `*.ext` and only that shape is a suffix rule. The `!anchored` half matters: `/*.log` is anchored to
+                // the file's own directory, so a suffix test on the whole path would wrongly match `a/b.log`; the
+                // reference gets that one wrong and this port does not copy it.
+                kind = Kind.SUFFIX;
+                suffix = line.substring(1);
+            } else {
+                kind = Kind.GLOB;
+            }
+            return new Rule(negated, directoryOnly, anchored, singleSegment, false, kind,
+                    kind == Kind.LITERAL ? line : null, suffix,
                     line.substring(line.lastIndexOf('/') + 1),
-                    Glob.compile(line, anchored, segment -> translate(segment)));
+                    kind == Kind.GLOB ? Glob.compile(line, anchored, Rule::translate) : null);
+        }
+
+        /** Whether a `**` stands as a whole slash-delimited segment of {@code line}. */
+        private static boolean hasDoubleStarSegment(String line) {
+            int start = 0;
+            while (start <= line.length()) {
+                int slash = line.indexOf('/', start);
+                int end = slash < 0 ? line.length() : slash;
+                if (end - start == 2 && line.charAt(start) == '*' && line.charAt(start + 1) == '*') {
+                    return true;
+                }
+                if (slash < 0) {
+                    return false;
+                }
+                start = slash + 1;
+            }
+            return false;
         }
 
         /**
@@ -499,10 +571,10 @@ public final class GitIgnoreFile {
          *
          * <p>{@code false} for a directory-only rule: its ancestor-prefix branch asks about a different segment, whose
          * last segment is not the path's, so the path's own tail cannot reject it. {@code false} when the final segment
-         * is {@code **}, which has no such condition.</p>
+         * is {@code **}, which has no such condition, and for a literal or suffix rule, which never splits.</p>
          */
         boolean tailRejects(String path) {
-            if (directoryOnly) {
+            if (directoryOnly || segments == null) {
                 return false;
             }
             Glob.Segment tail = segments[segments.length - 1];
@@ -517,26 +589,42 @@ public final class GitIgnoreFile {
             return !tail.regex().matcher(last).matches();
         }
 
-        /** The same question with the path already split, so a caller deciding many rules splits it once. */
+        /**
+         * Whether the rule matches the whole path.
+         *
+         * @param path the path relative to this file's directory
+         * @param segments the path split, or {@code null} when no glob rule has needed it yet
+         */
         boolean matches(String path, String[] segments, boolean isDirectory) {
             if (!directoryOnly) {
-                return Glob.matches(this.segments, segments, -1);
+                return matchesText(path, segments);
             }
-            if (!anchored) {
-                // An unanchored `pat/` names a directory at any level below its file, so only the path's own base name
-                // can be tested here; a matching ancestor is the directory state's inherited fact, not this rule's
-                // answer for the path below it. Git's own file decision asks only the final component, which is why
-                // `!out/` after `*.log` must not re-include `out/x`.
-                return isDirectory && matchesName(segments[segments.length - 1]);
+            if (!anchored && singleSegment) {
+                // An unanchored one-component `pat/` names a directory at any level below its file, so only the path's
+                // own base name can be tested here; a matching ancestor is the directory state's inherited fact, not
+                // this rule's answer for the path below it. Git's own file decision asks only the final component,
+                // which is why `!out/` after `*.log` must not re-include `out/x`.
+                return isDirectory && matchesName(lastSegmentOf(path));
             }
-            if (isDirectory && Glob.matches(this.segments, segments, -1)) {
+            if (kind == Kind.GLOB) {
+                if (isDirectory && Glob.matches(this.segments, segments, -1)) {
+                    return true;
+                }
+                // An anchored or normalised multi-segment directory pattern is a whole prefix directory, so a file
+                // below it is its match. A segment count is enough: no substring is built per ancestor.
+                for (int count = segments.length - 1; count >= 1; count--) {
+                    if (Glob.matches(this.segments, segments, count)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            // A literal or suffix rule: the path itself, then every ancestor prefix, as a string — no split, no DP.
+            if (isDirectory && matchesText(path, null)) {
                 return true;
             }
-            // An anchored directory-only pattern is a whole prefix directory, so a file below it is its match; the
-            // walk prunes, and a caller that tests a path on its own gets git's answer either way. A segment count is
-            // enough: no substring is built per ancestor.
-            for (int count = segments.length - 1; count >= 1; count--) {
-                if (Glob.matches(this.segments, segments, count)) {
+            for (int slash = path.indexOf('/'); slash >= 0; slash = path.indexOf('/', slash + 1)) {
+                if (matchesText(path.substring(0, slash), null)) {
                     return true;
                 }
             }
@@ -544,20 +632,57 @@ public final class GitIgnoreFile {
         }
 
         /**
-         * Whether an unanchored directory-only rule names this one directory segment.
+         * The whole-path, base-name or path-suffix test a non-directory match asks, by class; {@code parts} is read
+         * only by a general glob.
+         */
+        private boolean matchesText(String path, String[] parts) {
+            switch (kind) {
+                case LITERAL:
+                    if (anchored) {
+                        return literal.equals(path);
+                    }
+                    return singleSegment ? endsWithSegment(path, literal) : endsWithPath(path, literal);
+                case SUFFIX:
+                    // A suffix rule is unanchored and one component by construction, so the base name ending in the
+                    // suffix is the path ending in it.
+                    return path.endsWith(suffix);
+                default:
+                    return Glob.matches(segments, parts, -1);
+            }
+        }
+
+        /** Whether {@code path} ends with {@code suffix} at a path-component boundary. */
+        private static boolean endsWithPath(String path, String suffix) {
+            if (!path.endsWith(suffix)) {
+                return false;
+            }
+            int start = path.length() - suffix.length();
+            return start == 0 || path.charAt(start - 1) == '/';
+        }
+
+        /**
+         * Whether an unanchored single-component directory-only rule names this one directory segment.
          *
-         * <p>The rule's pattern has no separator (a separator makes it anchored), so its last compiled segment is the
-         * whole name; a lone {@code **} names every directory.</p>
+         * <p>Its pattern has no separator (a normalised multi-segment one is answered by its path suffix instead), so a
+         * literal compares, a suffix rule ends the name, and a glob uses its last compiled segment; a lone {@code **}
+         * names every directory.</p>
          */
         boolean matchesName(String name) {
-            Glob.Segment tail = segments[segments.length - 1];
-            if (tail.doubleStar()) {
-                return true;
+            switch (kind) {
+                case LITERAL:
+                    return literal.equals(name);
+                case SUFFIX:
+                    return name.endsWith(suffix);
+                default:
+                    Glob.Segment tail = segments[segments.length - 1];
+                    if (tail.doubleStar()) {
+                        return true;
+                    }
+                    if (tail.literal() != null) {
+                        return tail.literal().equals(name);
+                    }
+                    return tail.regex().matcher(name).matches();
             }
-            if (tail.literal() != null) {
-                return tail.literal().equals(name);
-            }
-            return tail.regex().matcher(name).matches();
         }
 
         /** Trailing spaces are ignored unless they are escaped with a backslash. */

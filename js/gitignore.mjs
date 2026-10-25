@@ -132,19 +132,15 @@ const hasWildcardByte = /[*?[\\]/;
  */
 const BUCKET_MIN_RULES = 4;
 
-/**
- * Classify a rule by its **last segment**, the file-side counterpart of the reference's `Chain.literal_dirs`.
- *
- * Directory-only rules are never bucketed: their match can be an ancestor directory, whose base name is not the
- * path's, so a base-name key would reject a path the rule really excludes. A plain unanchored name also stays on the
- * scan: it is one compiled segment test and it already has no prefix to verify. The bucket is for rules whose scan
- * costs a whole-path verification.
- */
+// Classify a rule by its **last segment**, the file-side counterpart of the reference's `Chain.literal_dirs`.
+//
+// Directory-only rules are never bucketed: their match can be an ancestor directory, whose base name is not the
+// path's, so a base-name key would reject a path the rule really excludes. A non-directory-only rule whose last
+// segment is a plain name is bucketed whether it is anchored or not, because its base name is a necessary condition
+// in both forms: `**/target` (normalised to the unanchored `target`) and `src/**/target` both require the path's
+// base to be `target`, and an unanchored name is the same question with nothing left to verify.
 function bucketKeyOf(rule) {
   if (rule.directoryOnly) {
-    return null;
-  }
-  if (!rule.anchored && rule.literal !== null) {
     return null;
   }
   const tail = rule.lastSegment;
@@ -181,13 +177,33 @@ function parseRule(rawLine) {
   if (directoryOnly) {
     line = line.slice(0, -1);
   }
-  const anchored = line.startsWith('/') || line.includes('/');
+  let anchored = line.startsWith('/') || line.includes('/');
   if (line.startsWith('/')) {
     line = line.slice(1);
   }
   if (line.length === 0) {
     return null;
   }
+  // Zig normalises a leading `**/` at parse time, and the DP measurement showed what it is worth here: the
+  // calls stop existing. `**/pat` means "at any depth", which is exactly what an unanchored pattern already
+  // means, so the prefix can be dropped before anything is classified:
+  //
+  //   **/x        -> x        a base-name literal (and, for `x/`, a directory name)
+  //   **/*.ext    -> *.ext    a suffix rule, keyed by its extension in the last-segment bucket
+  //   **/x/y      -> x/y      a path-suffix rule: the whole path must end with `x/y`
+  //
+  // Only a *leading* `**/` segment is dropped, and only when the rest holds no `**` segment of its own —
+  // `**/**/x`, `a/**/b`, `**/x/**/y` and every trailing `**` stay on the DP, where their (zero-or-more,
+  // one-or-more) semantics live. The rule keeps its position in `rules`, so git's later-pattern-wins order is
+  // untouched: this only changes how a rule is tested, never when it is consulted. `singleSegment` records
+  // whether the normalised pattern still names one component, which is what decides between the base-name
+  // fast path and the path-suffix one.
+  if (anchored && line.length > 3 && line.startsWith('**/') && line[3] !== '/'
+      && !line.slice(3).split('/').includes('**')) {
+    line = line.slice(3);
+    anchored = false;
+  }
+  const singleSegment = !line.includes('/');
   // The last segment, for the last-segment precheck: in any successful whole-path match a final pattern segment
   // that is not `**` must match the path's last segment. A literal tail compares with no slice and a wildcard tail
   // keeps one small anchored regex. The regex rules use it before the whole-path regex; the DP rules use it on the
@@ -200,6 +216,9 @@ function parseRule(rawLine) {
     negated,
     directoryOnly,
     anchored,
+    // Whether the pattern (after the `**/` normalisation) is one path component: the difference between a
+    // base-name rule — the unanchored form git means — and a normalised path-suffix rule such as `**/x/y`.
+    singleSegment,
     // The raw last segment, kept for the last-segment buckets: the bucket needs the *string* (a literal tail, or
     // the `*.ext` shape to key by), not only the compiled test.
     lastSegment,
@@ -287,8 +306,12 @@ export function parseGitignore(relativeDirectory, text) {
       if (depth > deepestAnchoredDepth) {
         deepestAnchoredDepth = depth;
       }
-    } else {
+    } else if (rule.singleSegment) {
       unanchoredLiterals.set(rule.literal, index);
+    } else {
+      // A normalised `**/x/y` is a path-suffix rule: its match is a suffix of the whole path, so a per-name
+      // index cannot answer it and it stays on the scanned path. Its base name is not a name it names.
+      continue;
     }
     rule.indexed = true;
   }
@@ -537,11 +560,26 @@ function matches(rule, path, isDirectory, segments, tail) {
       return rule.pattern.test(path);
     }
     if (!rule.anchored) {
-      // An unanchored `pat/` names a directory at any level below its file, so only the path's own base name can
-      // be tested here; a matching ancestor is the directory state's inherited fact, not this rule's answer for
-      // the path below it. Git's own file decision asks only the final component, which is why `!out/` after
-      // `*.log` must not re-include `out/x`.
-      return isDirectory && matchesName(rule, lastSegmentOf(path));
+      if (rule.singleSegment) {
+        // An unanchored `pat/` names a directory at any level below its file, so only the path's own base name can
+        // be tested here; a matching ancestor is the directory state's inherited fact, not this rule's answer for
+        // the path below it. Git's own file decision asks only the final component, which is why `!out/` after
+        // `*.log` must not re-include `out/x`.
+        return isDirectory && matchesName(rule, lastSegmentOf(path));
+      }
+      // A normalised `**/x/y/` is a path-suffix rule, not a name: the path (or an ancestor prefix of it, which is
+      // a directory by construction) must END with `x/y`. That is the same ancestor branch an anchored
+      // directory-only rule has; the single-component form above is the base-name fast path, and it is the only
+      // form the per-name index holds.
+      if (isDirectory && rule.pattern.test(path)) {
+        return true;
+      }
+      for (let slash = path.indexOf('/'); slash >= 0; slash = path.indexOf('/', slash + 1)) {
+        if (rule.pattern.test(path.slice(0, slash))) {
+          return true;
+        }
+      }
+      return false;
     }
     if (isDirectory && rule.pattern.test(path)) {
       return true;
@@ -575,12 +613,11 @@ function matches(rule, path, isDirectory, segments, tail) {
   return false;
 }
 
-/**
- * Whether an unanchored directory-only rule names this one directory segment.
- *
- * The rule's pattern has no separator (a separator makes it anchored), so its last segment is the whole name and
- * `lastLiteral` / `lastPattern` answer without a split or a whole-path regex. A lone `**` names every directory.
- */
+// Whether an unanchored single-component directory-only rule names this one directory segment.
+//
+// Only the `singleSegment` form reaches here: the rule's pattern has no separator (a separator used to make it
+// anchored, and a normalised `**/x/y/` is answered by its path suffix instead), so its last segment is the whole name
+// and `lastLiteral` / `lastPattern` answer without a split or a whole-path regex. A lone `**` names every directory.
 function matchesName(rule, name) {
   if (rule.lastLiteral !== null) {
     return rule.lastLiteral === name;

@@ -241,6 +241,72 @@ rule reached — so `deep`'s five `*.ext`/literal checks (four of them regex) lo
 `deep`'s five off the bucket, and that is where half the measured total came from.
 
 **Risk.** As shared.md; the bucket is built once per file, and `Rule.indexedCopy()` keeps it out of the scan, so the
-extra per-run cost is parse-time and is inside the start-up column. **Left:** the dir-only-negation divergence above.
+extra per-run cost is parse-time and is inside the start-up column. **Left:** the dir-only-negation divergence above —
+its `**`-prefixed form is what § 9 later fixes.
 
 ---
+
+## 9. Rule classes: literals and suffixes never reach the DP
+
+**What the split said.** Java's DP share was **4.9% of its total** — the largest of the three ports — and unlike JS's it
+was not a `**` problem. This port's matcher was **universal**: every pattern was compiled to `Glob.Segment[]` and answered
+by the segment DP, including a plain literal name and a `*.ext` suffix. The measured calls were `flat` **0.14** per
+decision (its three non-directory rules are below the bucket threshold, so each decision reached the DP for the `.log`
+paths) and `doublestar` **0.27**, with `deep`, `anchored`, `dirs` and `backtrack` at zero because the buckets and the
+tail precheck already rejected their rules. The reference, and the JS port after § 8, classify a rule as a literal, a
+suffix or a glob at parse time, and the first two never enter the matcher. The rejected-DP measurement named this as the
+follow-up with a real ceiling behind it.
+
+**The change.** `Rule` gained a `Kind` (`LITERAL`, `SUFFIX`, `GLOB`) and a `singleSegment` flag, both decided once at
+parse time. A leading `**/` is normalised exactly as in JS (the same three converted forms, the same exclusions, the same
+preservation of rule position). Then:
+
+- **`LITERAL`** — the whole pattern is plain bytes — is a `String.equals`: the whole path when anchored, the base name
+  when one component, a `/`-boundary path suffix when the normalisation left a separator (`**/x/y`).
+- **`SUFFIX`** is `path.endsWith(".ext")`, for the unanchored `*.ext` shape only. The reference classifies `/*.log` as a
+  suffix too and then tests the whole path, which wrongly matches `a/b.log`; this port tests `!anchored` first and keeps
+  the anchored form a glob.
+- **`GLOB`** — anything still holding a wildcard or a `**` — keeps the DP, the tail precheck and the directory-prefix
+  branch unchanged.
+
+The indexes are consulted before the DP as before, with two changes: the last-segment bucket now also holds a plain
+unanchored name (after normalisation that is the form `**/x` takes, so `doublestar`'s eleven such rules stay a lookup),
+and a normalised multi-segment directory literal stays on the scanned path instead of entering a name index it cannot
+answer. Precedence is untouched: `best` is still the highest position any index reached, and the reverse scan above it
+still lets a later general rule override a bucket hit. `needsSegments()` means the path is split only by a rule that asks
+it segment by segment, so a literal or suffix decision — including one verified inside a bucket — pays no split at all.
+
+**Measured effect.** Paired alternating A/B, `--rounds 12`, min of 9, per workload, in-process loop time (`LOOP_NS`),
+verdicts identical on all six workloads. Two sessions, the second with the labels reversed:
+
+| workload   | session 1 before → after   | session 2 before → after   | DP calls/decision |
+| ---------- | -------------------------: | -------------------------: | ----------------: |
+| flat       | 14.01 → 6.71 (**2.09x**)   | 13.30 → 6.22 (**2.14x**)   | **0.143 → 0**     |
+| deep       | 10.46 → 11.28 (−7.8%)      | 10.41 → 10.97 (−5.4%)      | 0 → 0             |
+| doublestar | 34.02 → 25.43 (**1.34x**)  | 34.57 → 24.08 (**1.44x**)  | **0.267 → 0**     |
+| anchored   | 12.35 → 12.65 (−2.4%)      | 12.48 → 13.41 (−7.5%)      | 0 → 0             |
+| dirs       | 6.57 → 7.10 (−8.1%)        | 6.68 → 7.04 (−5.4%)        | 0 → 0             |
+| backtrack  | 19.40 → 16.66 (**1.16x**)  | 19.41 → 16.95 (**1.15x**)  | 0 → 0             |
+| **total**  | **96.81 → 79.84 (1.21x)**  | **96.85 → 78.66 (1.23x)**  |                   |
+
+`flat`, `doublestar` and `backtrack` clear the ~13% floor in the same direction in both sessions (`backtrack` straddles
+it at 14.1% and 12.7%); `deep`, `anchored` and `dirs` are 2.4-8.1% slower in both, inside the noise floor and on code
+paths this change does not reach — every rule in those three workloads is already answered by an index, so the scanner
+never evaluates a class, and the only difference for them is the JIT seeing a larger `Rule`. **The DP reaches zero on
+every workload.**
+
+The gain on `flat` and `doublestar` is far above the 4.9% DP-share ceiling because the same rules also paid a
+`Matcher` allocation for each `tailRejects` comparison, which the share's counter never included — the
+"allocation, not comparison" lesson of `shared.md` § 3, and the reason a *reach* number and a *body* number tell
+different stories.
+
+**Risk, and one answer that changed, correctly.** Each class must accept exactly what the DP accepted: plain bytes for a
+literal, the unanchored `*.ext` shape for a suffix, and a `/`-boundary suffix for a normalised multi-segment literal. The
+git oracle is the proof, not the vectors: 54 hand-written corners plus 150-200 randomised `**`-heavy cases per run, three
+seeds, JS and Java both compared to `git check-ignore -q --no-index`, **0 disagreements**. As in JS, the normalisation
+makes `**/x/` behave like the unanchored `x/` it means, which fixes this port's recorded directory-only-negation
+divergence (`a/x/b` under `**/x/` + `!x/` was excluded; git includes it); `conformance/ancestor-vectors.json` pins it.
+The classes add no second semantics to keep in step because a `LITERAL`/`SUFFIX` test is the one-segment case of the same
+rule the DP implements — but a rule that is neither is left on the DP, and that boundary is where a future bug would
+live.
+

@@ -2,7 +2,7 @@
   "format": "gitignore-vectors",
   "version": 1,
   "generatedBy": "hand-authored for the last-segment buckets, then verified with git 2.54.0's `git check-ignore -v --no-index` (the deciding rule line, negation included) before this file was written",
-  "note": "The same schema as gitignore-vectors.json, kept separate because those 34 cases are the matcher contract and these pin one property of the decision order: a last-segment bucket is a candidate source, never an answer, so a later matching rule still wins and a later bucket rule still beats an earlier one. Every case here is decided by the last matching line of its single rule file.",
+  "note": "The same schema as gitignore-vectors.json, kept separate because those 34 cases are the matcher contract and these pin one property of the decision order: a last-segment bucket is a candidate source, never an answer, so a later matching rule still wins and a later bucket rule still beats an earlier one. The last three cases pin the other ordering property of the same machinery: a leading `**/` is normalised at parse time into the unanchored rule it means, so it keeps its position in the file and a later (or earlier) `!` rule still wins; each carries enough filler bucket rules that the last-segment bucket is built, so the bucket and the scan are both exercised. Every case here is decided by the last matching line of its single rule file.",
   "cases": [
     { "name": "a general negation after the bucket rule wins", "ruleFiles": [{ "dir": "", "rules": "*.log\n*.tmp\n*.class\n*.jar\n!a.*\n" }], "path": "a.log", "isDir": false, "expect": "include" },
     { "name": "a general exclusion after the bucket negation wins", "ruleFiles": [{ "dir": "", "rules": "!*.log\n*.tmp\n*.class\n*.jar\na.*\n" }], "path": "a.log", "isDir": false, "expect": "exclude" },
@@ -14,6 +14,9 @@
     { "name": "a narrower bucket negation still wins over the broader suffix", "ruleFiles": [{ "dir": "", "rules": "*.txt\n!*.class.txt\n*.log\n*.tmp\n" }], "path": "Foo.class.txt", "isDir": false, "expect": "include" },
     { "name": "a general negation before the bucket rule does not override it", "ruleFiles": [{ "dir": "", "rules": "*.tmp\n*.class\n*.jar\n!a.*\n*.log\n" }], "path": "a.log", "isDir": false, "expect": "exclude" },
     { "name": "an anchored bucket rule is verified against the whole path", "ruleFiles": [{ "dir": "", "rules": "*.log\n*.tmp\n*.class\n/src/*.g4\n" }], "path": "other/src/x.g4", "isDir": false, "expect": "no-opinion" },
-    { "name": "an anchored bucket rule matches its own path", "ruleFiles": [{ "dir": "", "rules": "*.log\n*.tmp\n*.class\n/src/*.g4\n" }], "path": "src/x.g4", "isDir": false, "expect": "exclude" }
+    { "name": "an anchored bucket rule matches its own path", "ruleFiles": [{ "dir": "", "rules": "*.log\n*.tmp\n*.class\n/src/*.g4\n" }], "path": "src/x.g4", "isDir": false, "expect": "exclude" },
+    { "name": "a normalised **/x rule is overridden by a later !x", "ruleFiles": [{ "dir": "", "rules": "**/x\n*.tmp\n*.log\n*.class\n!x\n" }], "path": "a/x", "isDir": false, "expect": "include" },
+    { "name": "a normalised **/x rule wins over an earlier !x", "ruleFiles": [{ "dir": "", "rules": "!x\n*.tmp\n*.log\n*.class\n**/x\n" }], "path": "a/x", "isDir": false, "expect": "exclude" },
+    { "name": "a normalised **/*.log rule is overridden by a later !keep.log", "ruleFiles": [{ "dir": "", "rules": "**/*.log\n*.tmp\n*.class\n*.jar\n!keep.log\n" }], "path": "a/keep.log", "isDir": false, "expect": "include" }
   ]
 }

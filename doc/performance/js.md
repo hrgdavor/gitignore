@@ -224,6 +224,66 @@ lookups and, on a hit, one whole-path verification. The tail checks that `deep` 
 `RegExp.test` each, so five of them do not pay for two map lookups.
 
 **Risk.** As shared.md. Nothing to revert: the only workloads with the bucket built improved or stayed inside noise,
-and the no-bucket workloads are unchanged code paths. **Left:** the dir-only-negation divergence above, pre-existing.
+and the no-bucket workloads are unchanged code paths. **Left:** the dir-only-negation divergence above, pre-existing —
+its `**`-prefixed form is what § 8 later fixes.
 
 ---
+
+## 8. Normalising a leading double-star prefix at parse time
+
+**What the split said.** The rejected bit-parallel DP was measured before it was written; the number that mattered was not
+the DP's cost but its **reach**: on `doublestar` this port entered `segmentsMatch` **0.27 times per decision** (2.9 cells,
+an **8.1%** share of that workload and 2.2% of the total), and the reference entered it **zero** times on every workload.
+Zig gets there at parse time: a leading `**/` means "at any depth", which is what an unanchored pattern already means, so
+it drops the prefix before classifying and `**/x` never becomes a DP rule. This port kept the anchored form, split the
+path for it, and ran the DP. A five-line scratch variant of the normalisation was measured first — 0 DP calls,
+`doublestar` 17.0 → 15.9 ms, all 10,000 parity verdicts identical — and that bought the proper version.
+
+**The change.** `parseRule` drops a leading `**/` after the leading `/` is stripped and before anything is classified, and
+sets `anchored = false`. It converts exactly these forms, and only when the remainder holds **no `**` segment of its own**:
+
+| written       | becomes   | class / match site                                         |
+| ------------- | --------- | ---------------------------------------------------------- |
+| `**/x`        | `x`       | unanchored base-name literal (`x/` is a directory name)    |
+| `**/*.ext`    | `*.ext`   | unanchored suffix rule, keyed by the extension             |
+| `**/x/y`      | `x/y`     | unanchored **path-suffix** rule: the path must end `x/y`   |
+| `/**/x`       | `x`       | the leading slash is stripped first, so it normalises too  |
+
+Everything else is **left to the DP**: `**/**/x`, `**/x/**/y`, `a/**/b`, any trailing `**`, and a `**` written inside a
+segment (`a**/b`, where git reads it as a plain `*`). `**/` followed by another `/` is left alone too. The rule keeps its
+original position in `rules`, so git's later-pattern-wins order is untouched — the change is to *how* a rule is tested,
+never to *when* it is consulted. A normalised multi-segment rule (`**/x/y`) is matched as a path suffix, and a normalised
+directory rule (`**/x/y/`) tests the path and its ancestor prefixes as suffixes; the single-segment directory form stays
+on the base-name path that the negation fix (`121f5dd`) established. The last-segment bucket was extended to hold plain
+unanchored names, which is what keeps `doublestar`'s eleven `**/name` rules a bucket lookup rather than eleven scan
+entries; a normalised rule's bucket key is still only a candidate, and the whole rule is verified before it can set
+`best`.
+
+**Measured effect.** Paired alternating A/B, `--rounds 12`, min of 9, per workload, in-process loop time (`LOOP_NS`, so
+no start-up subtraction), verdicts identical on all six workloads. Two sessions, the second with the labels reversed:
+
+| workload   | session 1 before → after   | session 2 before → after   | DP calls/decision |
+| ---------- | -------------------------: | -------------------------: | ----------------: |
+| flat       | 7.42 → 7.65 (−3.1%)        | 7.39 → 7.71 (−4.3%)        | 0 → 0             |
+| deep       | 10.67 → 10.63 (+0.4%)      | 10.67 → 10.67 (0.0%)       | 0 → 0             |
+| doublestar | 17.33 → 14.58 (**+15.9%**) | 17.44 → 14.87 (**+14.7%**) | **0.267 → 0**     |
+| anchored   | 9.98 → 9.69 (+2.9%)        | 9.76 → 9.83 (−0.7%)        | 0 → 0             |
+| dirs       | 6.81 → 6.89 (−1.2%)        | 6.87 → 6.84 (+0.4%)        | 0 → 0             |
+| backtrack  | 10.46 → 10.85 (−3.7%)      | 10.70 → 10.99 (−2.7%)      | 0 → 0             |
+| **total**  | **62.68 → 60.30 (+3.8%)**  | **62.83 → 60.91 (+3.1%)**  |                   |
+
+`doublestar` clears the ~13% floor in both sessions and in the same direction; the other five rows move ±4%, which is this
+bench's noise. The measured gain is larger than the 2.2% DP-share ceiling because the normalised rules also leave the
+scanned path: 22 tail checks per decision (a `RegExp.test` each) become two bucket lookups and, on a hit, one string
+test. The simplification is the point — **0.27 → 0 DP calls per decision** — and the timing is the bonus.
+
+**Risk. And one answer that changed, correctly.** A normalised directory rule (`**/x/`) now behaves exactly like the
+unanchored `x/` it means, and that class had already been fixed (`121f5dd`) to *not* test interior segments. So a later
+`!x/` re-includes the directory, and a file below it is then decided by its own name — which is git's answer, and the
+pre-change build disagreed with git here (`a/x/b` was excluded; git includes it). That is the pre-existing
+directory-only-negation divergence that `shared.md` recorded as "left", fixed here as a consequence of the equivalence
+the normalisation claims; `conformance/ancestor-vectors.json` pins the two `**/x/` cases, and the git oracle's randomised
+`**`-heavy cases agree. The risk that remains is the classification rule itself: a form nobody thought of that is *not*
+equivalent to an unanchored rule would be normalised wrongly, which is why the conversion is restricted to the leading
+prefix with no remaining `**` segment, and why the proof is the git oracle rather than the 34 vectors.
+

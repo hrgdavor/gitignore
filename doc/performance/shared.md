@@ -428,7 +428,45 @@ residual risk is the >63-segment word carry, not the closure.
 Java's 4.9 % into 0.9 %. The complexity it would add - a second matcher shape, a word-array path, a closure invariant - cannot
 be earned by one percent.
 
-**What the same measurement did argue for**, and what a future track should do instead: port Zig's parse-time `**/x`
-normalisation to the JS port (a five-line variant measured here gives 0 DP calls per decision and `doublestar` 17.0 -> 15.9 ms
-with all 10,000 verdicts identical), and give Java the literal/suffix rule classes that Zig and JS already have. Java's 4.9 % is
-its *universal* DP - every pattern goes through it - and no `**` rewrite touches that.
+**What the same measurement did argue for**: port Zig's parse-time `**/x` normalisation to the JS port (a five-line variant
+measured here gives 0 DP calls per decision and `doublestar` 17.0 -> 15.9 ms with all 10,000 verdicts identical), and give
+Java the literal/suffix rule classes that Zig and JS already have. Java's 4.9 % is its *universal* DP - every pattern goes
+through it - and no `**` rewrite touches that. **Both were done later the same day** (JS: `doublestar` 17.33 -> 14.58 ms,
+DP calls 0.27 -> 0; Java: `flat` 2.14x, `doublestar` 1.50x, DP calls 0.143/0.27 -> 0); see [`js.md`](js.md) §8,
+[`java.md`](java.md) §9 and § "The two follow-ups, done" below.
+
+---
+
+## The two follow-ups, done (2026-10-25)
+
+The rejection of the bit-parallel DP named two variations worth trying instead, in the order "delete the calls before
+accelerating them". Both were implemented and gated; the point in each was **DP calls per decision -> 0**, and the
+timing is the bonus.
+
+- **JS: a leading `**/` is normalised at parse time** into the unanchored rule it means. `**/x` becomes a base-name
+  literal, `**/*.ext` a suffix rule, `**/x/y` a path-suffix rule; `**/**/x`, `a/**/b`, `**/x/**/y` and any trailing
+  `**` keep the DP. The rule keeps its position, so ordering is untouched, and the last-segment bucket was extended to
+  plain unanchored names so the normalised rules stay lookups. Paired alternating A/B, `--rounds 12`, min of 9, two
+  sessions: **`doublestar` 17.33 -> 14.58 and 17.44 -> 14.87 ms (+15.9 %, +14.7 %), total +3.8 % / +3.1 %, DP calls
+  0.267 -> 0** on `doublestar` and 0 everywhere else; the other five workloads moved ±4 %, inside the noise. Full entry:
+  [`js.md`](js.md) §8.
+- **Java: the literal/suffix rule classes, and the same normalisation.** `Rule` is classified at parse time as
+  `LITERAL`, `SUFFIX` or `GLOB`; a literal is a `String.equals` (whole path, base name, or `/`-boundary path suffix) and a
+  suffix is `path.endsWith`, so neither reaches `Glob.matches`, splits the path, or allocates a `Matcher` in
+  `tailRejects`. The indexes are consulted first exactly as before. Paired A/B, two sessions: **`flat` 14.01 -> 6.71
+  and 13.30 -> 6.22 ms (2.09x / 2.14x), `doublestar` 34.02 -> 25.43 and 34.57 -> 24.08 (1.34x / 1.44x), `backtrack`
+  19.40 -> 16.66 and 19.41 -> 16.95 (1.16x / 1.15x), total 1.21x / 1.23x; DP calls 0.143 (flat) and 0.267
+  (doublestar) -> 0, zero everywhere.** `deep`, `anchored` and `dirs` moved 2.4-8.1% slower in both sessions, inside
+  the noise floor and on code paths the change does not reach. Full entry:
+  [`java.md`](java.md) §9.
+
+Neither result fits the 4.9 % / 2.2 % DP-share ceiling, and that is not a contradiction: the share counted the DP body
+only, while the same rules also paid a `Matcher` (Java) or a `RegExp.test` tail check and a scan entry (JS) per decision.
+The same lesson as §3 — **allocation and reach, not comparison**. Both ports also gained an answer that now matches git:
+a normalised `**/x/` behaves like the unanchored `x/` it means, which fixes the recorded directory-only-negation
+divergence for that form (`conformance/ancestor-vectors.json` pins it).
+
+**What is left after them.** The DP is now reached only by a rule that still contains `**` or a multi-segment wildcard —
+which is the state the checklist in [`rejected-bit-parallel-dp.md`](rejected-bit-parallel-dp.md) §5 asked for — so the
+remaining DP calls are zero on every measured workload. The next measurement, if one is ever needed, is the "rules tested
+per decision" counter that §6 of that file names as the variation never measured, not a faster DP.
