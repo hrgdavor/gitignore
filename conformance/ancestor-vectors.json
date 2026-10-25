@@ -1,25 +1,346 @@
 {
-  "format": "gitignore-vectors",
-  "version": 1,
-  "generatedBy": "hand-selected oracle rows, every field written from .tmp/negfix/after-matrix.json: real git 2.54 check-ignore -q --no-index for the verdict and -v -n for the deciding line, then the three implementations had to agree with it",
-  "note": "A sibling of ordering-vectors.json, not a part of it, because that file pins one property of the last-matching-pattern order (a last-segment bucket is a candidate source, never an answer) and every one of its cases is decided by the last matching line of one file. These cases pin the scope of a directory-only rule and the walk: a directory-only pattern is a fact about a directory, so it never matches a file below that directory by name (an excluded ancestor is what excludes a file, and a negation inside an excluded directory cannot re-open anything). git is the raw verdict and gitRule the line git named; expect is the three-valued answer all three implementations give. Paths exist on disk when the oracle runs, because only a real tree makes git answer a directory-ness question the way a caller would.",
-  "cases": [
-    {"name":"a dir-only negation does not match a file below it","ruleFiles":[{"dir":"","rules":"b.log\n!out/\n"}],"path":"out/b.log","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:1:b.log","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:b.log"},
-    {"name":"a dir-only negation after a suffix rule still does not match a file","ruleFiles":[{"dir":"","rules":"*.log\n!out/\n"}],"path":"out/b.log","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:1:*.log","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:*.log"},
-    {"name":"a suffix rule after a dir-only negation decides the file","ruleFiles":[{"dir":"","rules":"!out/\n*.log\n"}],"path":"out/b.log","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:2:*.log","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:2:*.log"},
-    {"name":"!out/ alone is no opinion about a file below out","ruleFiles":[{"dir":"","rules":"!out/\n"}],"path":"out/a/target","isDir":false,"expect":"no-opinion","git":"not-ignored","gitRule":null,"note":"git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named no pattern (its ::path line)"},
-    {"name":"!out/ alone is no opinion about out itself","ruleFiles":[{"dir":"","rules":"!out/\n"}],"path":"out","isDir":true,"expect":"include","git":"not-ignored","gitRule":".gitignore:1:!out/","note":"git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named .gitignore:1:!out/"},
-    {"name":"a deep dir-only negation is no opinion about a file below it","ruleFiles":[{"dir":"","rules":"!build/\n"}],"path":"src/build/x","isDir":false,"expect":"no-opinion","git":"not-ignored","gitRule":null,"note":"git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named no pattern (its ::path line)"},
-    {"name":"a dir-only negation does re-include the directory it names","ruleFiles":[{"dir":"","rules":"out/\n!out/\n"}],"path":"out","isDir":true,"expect":"include","git":"not-ignored","gitRule":".gitignore:2:!out/","note":"git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named .gitignore:2:!out/"},
-    {"name":"a dir-only negation re-includes a file below that directory","ruleFiles":[{"dir":"","rules":"out/\n!out/\n"}],"path":"out/x","isDir":false,"expect":"no-opinion","git":"not-ignored","gitRule":null,"note":"git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named no pattern (its ::path line)"},
-    {"name":"a same-file negation cannot re-include below an excluded directory","ruleFiles":[{"dir":"","rules":"out/\n!out/keep.txt\n"}],"path":"out/keep.txt","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:1:out/","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:out/"},
-    {"name":"a nested negation cannot re-include below an excluded directory","ruleFiles":[{"dir":"","rules":"out/\n"},{"dir":"out","rules":"!keep.txt\n"}],"path":"out/keep.txt","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:1:out/","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:out/"},
-    {"name":"an anchored directory rule cannot be opened by a negation below it","ruleFiles":[{"dir":"","rules":"src/generated/\n!src/generated/keep.txt\n"}],"path":"src/generated/keep.txt","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:1:src/generated/","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:src/generated/"},
-    {"name":"a deep negation cannot re-include below a shallow excluded directory","ruleFiles":[{"dir":"","rules":"out/\n!out/a/b.txt\n"}],"path":"out/a/b.txt","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:1:out/","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:out/"},
-    {"name":"an unanchored dir-only glob cannot be opened below it","ruleFiles":[{"dir":"","rules":"gen*/\n!gen*/keep.txt\n"}],"path":"generated/keep.txt","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:1:gen*/","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:gen*/"},
-    {"name":"a plain suffix rule decides a file below an unused dir name","ruleFiles":[{"dir":"","rules":"*.log\n"}],"path":"out/b.log","isDir":false,"expect":"exclude","git":"exclude","gitRule":".gitignore:1:*.log","note":"git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:*.log"},
-    {"name":"a negation inside a non-excluded directory still re-includes","ruleFiles":[{"dir":"","rules":"*.log\n"},{"dir":"src","rules":"!keep.log\n"}],"path":"src/keep.log","isDir":false,"expect":"include","git":"not-ignored","gitRule":"src/.gitignore:1:!keep.log","note":"git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named src/.gitignore:1:!keep.log"},
-    {"name":"a normalised **/x/ negation re-includes the directory, so a file below it is no opinion","ruleFiles":[{"dir":"","rules":"**/x/\n!x/\n"}],"path":"a/x/b","isDir":false,"expect":"no-opinion","git":"not-ignored","gitRule":null,"note":"git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named no pattern for the file (its ::path line), and named .gitignore:2:!x/ for the directory a/x itself — the parse-time `**` + `/` normalisation must make this form answer exactly like the unanchored x/ rule"},
-    {"name":"a normalised **/x/ negation re-includes the directory it names","ruleFiles":[{"dir":"","rules":"**/x/\n!x/\n"}],"path":"a/x","isDir":true,"expect":"include","git":"not-ignored","gitRule":".gitignore:2:!x/","note":"git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named .gitignore:2:!x/"}
-  ]
+    "format":  "gitignore-vectors",
+    "version":  1,
+    "generatedBy":  "hand-selected oracle rows, every field written from .tmp/negfix/after-matrix.json: real git 2.54 check-ignore -q --no-index for the verdict and -v -n for the deciding line, then the three implementations had to agree with it",
+    "note":  "A sibling of ordering-vectors.json, not a part of it, because that file pins one property of the last-matching-pattern order (a last-segment bucket is a candidate source, never an answer) and every one of its cases is decided by the last matching line of one file. These cases pin the scope of a directory-only rule and the walk: a directory-only pattern is a fact about a directory, so it never matches a file below that directory by name (an excluded ancestor is what excludes a file, and a negation inside an excluded directory cannot re-open anything). git is the raw verdict and gitRule the line git named; expect is the three-valued answer all three implementations give. Paths exist on disk when the oracle runs, because only a real tree makes git answer a directory-ness question the way a caller would. It also pins anchoring: an anchored rule must not be answered by a last-segment bucket.",
+    "cases":  [
+                  {
+                      "name":  "a dir-only negation does not match a file below it",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "b.log\n!out/\n"
+                                        }
+                                    ],
+                      "path":  "out/b.log",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:b.log",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:b.log"
+                  },
+                  {
+                      "name":  "a dir-only negation after a suffix rule still does not match a file",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "*.log\n!out/\n"
+                                        }
+                                    ],
+                      "path":  "out/b.log",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:*.log",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:*.log"
+                  },
+                  {
+                      "name":  "a suffix rule after a dir-only negation decides the file",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "!out/\n*.log\n"
+                                        }
+                                    ],
+                      "path":  "out/b.log",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:2:*.log",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:2:*.log"
+                  },
+                  {
+                      "name":  "!out/ alone is no opinion about a file below out",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "!out/\n"
+                                        }
+                                    ],
+                      "path":  "out/a/target",
+                      "isDir":  false,
+                      "expect":  "no-opinion",
+                      "git":  "not-ignored",
+                      "gitRule":  null,
+                      "note":  "git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named no pattern (its ::path line)"
+                  },
+                  {
+                      "name":  "!out/ alone is no opinion about out itself",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "!out/\n"
+                                        }
+                                    ],
+                      "path":  "out",
+                      "isDir":  true,
+                      "expect":  "include",
+                      "git":  "not-ignored",
+                      "gitRule":  ".gitignore:1:!out/",
+                      "note":  "git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named .gitignore:1:!out/"
+                  },
+                  {
+                      "name":  "a deep dir-only negation is no opinion about a file below it",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "!build/\n"
+                                        }
+                                    ],
+                      "path":  "src/build/x",
+                      "isDir":  false,
+                      "expect":  "no-opinion",
+                      "git":  "not-ignored",
+                      "gitRule":  null,
+                      "note":  "git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named no pattern (its ::path line)"
+                  },
+                  {
+                      "name":  "a dir-only negation does re-include the directory it names",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "out/\n!out/\n"
+                                        }
+                                    ],
+                      "path":  "out",
+                      "isDir":  true,
+                      "expect":  "include",
+                      "git":  "not-ignored",
+                      "gitRule":  ".gitignore:2:!out/",
+                      "note":  "git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named .gitignore:2:!out/"
+                  },
+                  {
+                      "name":  "a dir-only negation re-includes a file below that directory",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "out/\n!out/\n"
+                                        }
+                                    ],
+                      "path":  "out/x",
+                      "isDir":  false,
+                      "expect":  "no-opinion",
+                      "git":  "not-ignored",
+                      "gitRule":  null,
+                      "note":  "git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named no pattern (its ::path line)"
+                  },
+                  {
+                      "name":  "a same-file negation cannot re-include below an excluded directory",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "out/\n!out/keep.txt\n"
+                                        }
+                                    ],
+                      "path":  "out/keep.txt",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:out/",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:out/"
+                  },
+                  {
+                      "name":  "a nested negation cannot re-include below an excluded directory",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "out/\n"
+                                        },
+                                        {
+                                            "dir":  "out",
+                                            "rules":  "!keep.txt\n"
+                                        }
+                                    ],
+                      "path":  "out/keep.txt",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:out/",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:out/"
+                  },
+                  {
+                      "name":  "an anchored directory rule cannot be opened by a negation below it",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "src/generated/\n!src/generated/keep.txt\n"
+                                        }
+                                    ],
+                      "path":  "src/generated/keep.txt",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:src/generated/",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:src/generated/"
+                  },
+                  {
+                      "name":  "a deep negation cannot re-include below a shallow excluded directory",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "out/\n!out/a/b.txt\n"
+                                        }
+                                    ],
+                      "path":  "out/a/b.txt",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:out/",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:out/"
+                  },
+                  {
+                      "name":  "an unanchored dir-only glob cannot be opened below it",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "gen*/\n!gen*/keep.txt\n"
+                                        }
+                                    ],
+                      "path":  "generated/keep.txt",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:gen*/",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:gen*/"
+                  },
+                  {
+                      "name":  "a plain suffix rule decides a file below an unused dir name",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "*.log\n"
+                                        }
+                                    ],
+                      "path":  "out/b.log",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:*.log",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:*.log"
+                  },
+                  {
+                      "name":  "a negation inside a non-excluded directory still re-includes",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "*.log\n"
+                                        },
+                                        {
+                                            "dir":  "src",
+                                            "rules":  "!keep.log\n"
+                                        }
+                                    ],
+                      "path":  "src/keep.log",
+                      "isDir":  false,
+                      "expect":  "include",
+                      "git":  "not-ignored",
+                      "gitRule":  "src/.gitignore:1:!keep.log",
+                      "note":  "git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named src/.gitignore:1:!keep.log"
+                  },
+                  {
+                      "name":  "a normalised **/x/ negation re-includes the directory, so a file below it is no opinion",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "**/x/\n!x/\n"
+                                        }
+                                    ],
+                      "path":  "a/x/b",
+                      "isDir":  false,
+                      "expect":  "no-opinion",
+                      "git":  "not-ignored",
+                      "gitRule":  null,
+                      "note":  "git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named no pattern for the file (its ::path line), and named .gitignore:2:!x/ for the directory a/x itself â€” the parse-time `**` + `/` normalisation must make this form answer exactly like the unanchored x/ rule"
+                  },
+                  {
+                      "name":  "a normalised **/x/ negation re-includes the directory it names",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "**/x/\n!x/\n"
+                                        }
+                                    ],
+                      "path":  "a/x",
+                      "isDir":  true,
+                      "expect":  "include",
+                      "git":  "not-ignored",
+                      "gitRule":  ".gitignore:2:!x/",
+                      "note":  "git 2.54 check-ignore -q --no-index: not ignored; check-ignore -v -n named .gitignore:2:!x/"
+                  },
+                  {
+                      "name":  "an anchored suffix matches at the root",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "/*.log\n"
+                                        }
+                                    ],
+                      "path":  "b.log",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:/*.log",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; check-ignore -v -n named .gitignore:1:/*.log"
+                  },
+                  {
+                      "name":  "an anchored suffix does not match a file in a subdirectory",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "/*.log\n"
+                                        }
+                                    ],
+                      "path":  "a/b.log",
+                      "isDir":  false,
+                      "expect":  "no-opinion",
+                      "git":  "include",
+                      "gitRule":  null,
+                      "note":  "gio includes it: the rule is anchored to the root, so depth disqualifies it. The suffix bucket keyed by .log used to match it anyway. The library\u0027s vocabulary distinguishes no opinion (nothing matched) from an explicit re-include, which is what a negation gives; git\u0027s \u0027not ignored\u0027 is the former here."
+                  },
+                  {
+                      "name":  "an unanchored suffix does match a file in a subdirectory",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "*.log\n"
+                                        }
+                                    ],
+                      "path":  "a/b.log",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:*.log",
+                      "note":  "the same tail without the leading slash is depth-independent: git 2.54 check-ignore -q --no-index: excluded"
+                  },
+                  {
+                      "name":  "an anchored literal does not match a file in a subdirectory",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "/target\n"
+                                        }
+                                    ],
+                      "path":  "a/target",
+                      "isDir":  false,
+                      "expect":  "no-opinion",
+                      "git":  "include",
+                      "gitRule":  null,
+                      "note":  "git 2.54 check-ignore -q --no-index: included. The base-name literal bucket must not answer an anchored rule. The library\u0027s vocabulary distinguishes no opinion (nothing matched) from an explicit re-include, which is what a negation gives; git\u0027s \u0027not ignored\u0027 is the former here."
+                  },
+                  {
+                      "name":  "an anchored literal matches at the root",
+                      "ruleFiles":  [
+                                        {
+                                            "dir":  "",
+                                            "rules":  "/target\n"
+                                        }
+                                    ],
+                      "path":  "target",
+                      "isDir":  false,
+                      "expect":  "exclude",
+                      "git":  "exclude",
+                      "gitRule":  ".gitignore:1:/target",
+                      "note":  "git 2.54 check-ignore -q --no-index: excluded; provenance named .gitignore:1:/target"
+                  }
+              ]
 }

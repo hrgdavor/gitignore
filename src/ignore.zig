@@ -205,7 +205,14 @@ fn chainRuleMatches(rule: gitignore.Rule, path: []const u8, base: []const u8, is
         const path_first = path[0..(std.mem.indexOfScalar(u8, path, '/') orelse path.len)];
         if (!std.mem.eql(u8, head, path_first)) return false;
     }
-    if (!rule.directory_only) return chainMatchText(rule, if (rule.anchored) path else base);
+    if (!rule.directory_only) {
+        // An anchored `*.ext` is a root-level pattern: its tail must be the path itself, not a suffix of a
+        // deeper path (`/*.log` does not match `a/b.log`, which git includes).
+        if (rule.anchored and rule.kind == .suffix) {
+            return std.mem.indexOfScalar(u8, path, '/') == null and chainMatchText(rule, path);
+        }
+        return chainMatchText(rule, if (rule.anchored) path else base);
+    }
     // An unanchored `pat/` names a directory at any level *below its own file*, so the path's own base name
     // is the only thing it can be tested against here; a matching ancestor is `dirState`'s inherited fact.
     // Testing whole path prefixes is how the indexed matcher missed a nested `out/` and could match a
@@ -233,7 +240,14 @@ fn chainMatchText(rule: gitignore.Rule, text: []const u8) bool {
 /// `chainRuleMatches` with the historical recursive `**` matcher instead of the segment DP. Only
 /// `decideNaive` calls this.
 fn chainRuleMatchesNaive(rule: gitignore.Rule, path: []const u8, base: []const u8, is_dir: bool) bool {
-    if (!rule.directory_only) return chainMatchTextNaive(rule, if (rule.anchored) path else base);
+    if (!rule.directory_only) {
+        // An anchored `*.ext` is a root-level pattern: its tail must be the path itself, not a suffix of a
+        // deeper path (`/*.log` does not match `a/b.log`, which git includes).
+        if (rule.anchored and rule.kind == .suffix) {
+            return std.mem.indexOfScalar(u8, path, '/') == null and chainMatchTextNaive(rule, path);
+        }
+        return chainMatchTextNaive(rule, if (rule.anchored) path else base);
+    }
     // The historical branch tested the whole path and its prefixes, so an unanchored `out/` never saw the
     // base name of a nested directory (`b/d/out`) — git excludes it. An unanchored `pat/` names a directory
     // at any level below its file, so its own base name is what it is tested against; an excluded ancestor
@@ -287,7 +301,11 @@ const BucketKey = union(enum) {
 /// already answered by `Chain.literals`, and it needs no verification at all.
 fn bucketKey(rule: gitignore.Rule) BucketKey {
     if (rule.directory_only) return .none;
-    if (!rule.anchored and rule.kind == .literal) return .none;
+    // An anchored rule is answered from the root only, and a bucket is a base-name filter: `/*.log` keyed by
+    // `.log` would match `a/b.log`, which git includes. Anchored rules are few, so they keep the scanned list,
+    // where the whole pattern is verified.
+    if (rule.anchored) return .none;
+    if (rule.kind == .literal) return .none;
     const tail = baseName(rule.glob);
     if (tail.len == 0) return .none;
     if (!hasWildcardByte(tail)) return .{ .literal = tail };
