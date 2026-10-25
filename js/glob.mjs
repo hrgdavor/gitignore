@@ -50,6 +50,23 @@ function rows(size) {
  * @param {number} [count] how many segments to consider (default: all of them)
  */
 export function segmentsMatch(segments, text, count = text.length) {
+  // The pattern's last segment, when it is not `**`, has to match the last segment the call considers — otherwise the
+  // whole DP is spent on a match that cannot exist. `count` is the first `count` segments, so the last considered text
+  // segment is `text[count - 1]` (the path's own last segment only when the whole path is being matched); a
+  // directory-only ancestor question passes its own last considered segment this way instead of the path's.
+  if (count > 0) {
+    const tail = segments[segments.length - 1];
+    if (tail.doubleStar !== true) {
+      const textTail = text[count - 1];
+      if (tail.literal !== undefined) {
+        if (textTail !== tail.literal) {
+          return false;
+        }
+      } else if (!tail.regex.test(textTail)) {
+        return false;
+      }
+    }
+  }
   const [first, second] = rows(count + 1);
   let reach = first;
   let next = second;

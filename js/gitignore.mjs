@@ -120,6 +120,9 @@ function translateCharacterClass(glob, open) {
   return { regex: `${translated}]`, close };
 }
 
+/** A pattern segment with none of these bytes is a plain name, so a directory-only rule can be indexed by it. */
+const hasWildcardByte = /[*?[\\]/;
+
 /** One parsed pattern. */
 function parseRule(rawLine) {
   let line = stripTrailingUnescapedSpaces(rawLine);
@@ -148,6 +151,11 @@ function parseRule(rawLine) {
   return {
     negated,
     directoryOnly,
+    anchored,
+    // A plain name (no wildcard, no escape) is indexed rather than scanned: the directory-only ones are what a
+    // per-path prefix walk asks about most, and a name is the whole question for the unanchored form.
+    literal: hasWildcardByte.test(line) ? null : line,
+    indexed: false,
     // Both anchors are required: Java's `Matcher.matches()` anchors the whole pattern, while JavaScript's
     // `RegExp.test` searches — and a missing `^` lets an anchored pattern match a path *suffix*. That one
     // difference is what the ignore vector `anchored-pattern` caught between the two ports.
@@ -197,6 +205,42 @@ export function parseGitignore(relativeDirectory, text) {
       rules.push(rule);
     }
   }
+  // The directory-only literal rules are indexed rather than scanned, because they are the class a per-path
+  // decision asks about most and the one whose scan costs a prefix walk per rule. Two forms, because the
+  // question differs: an anchored literal is a whole path prefix (`module0/src/main/java/`), so it is keyed
+  // by that path and looked up once per depth the path has; an unanchored one is a single name (`build/`),
+  // so it is keyed by the name and looked up once per segment. A literal can only match a prefix of exactly
+  // its own depth, which is what the per-depth flag preserves: `java/fory-0/...` is rejected against a
+  // `java/fory-1/...` rule by the lookup itself, the case a first-segment prune cannot see. The flags are a
+  // plain array here rather than the reference's `u256`, and a pattern deeper than the array stays on the
+  // scanned path, where the answer is still the correct one.
+  const anchoredLiterals = new Map();
+  const unanchoredLiterals = new Map();
+  const anchoredDepths = [];
+  let deepestAnchoredDepth = 0;
+  for (let index = 0; index < rules.length; index++) {
+    const rule = rules[index];
+    if (!rule.directoryOnly || rule.literal === null) {
+      continue;
+    }
+    if (rule.anchored) {
+      let depth = 1;
+      for (let at = rule.literal.indexOf('/'); at >= 0; at = rule.literal.indexOf('/', at + 1)) {
+        depth += 1;
+      }
+      if (depth > 256) {
+        continue;
+      }
+      anchoredLiterals.set(rule.literal, index);
+      anchoredDepths[depth] = true;
+      if (depth > deepestAnchoredDepth) {
+        deepestAnchoredDepth = depth;
+      }
+    } else {
+      unanchoredLiterals.set(rule.literal, index);
+    }
+    rule.indexed = true;
+  }
   return {
     relativeDirectory: directory,
     ruleCount: rules.length,
@@ -216,17 +260,67 @@ export function parseGitignore(relativeDirectory, text) {
         }
         scoped = relativePath.slice(prefix.length);
       }
+
+      // Ask the index first. `best` is the highest rule position any indexed rule can reach for this path, so
+      // only rules after it can override the answer — usually none. That is also why a hit needs no split:
+      // a path the index decides is answered before the matcher is reached.
+      let best = -1;
+      if (unanchoredLiterals.size > 0) {
+        // An unanchored directory rule names one segment, and for a file the last segment is the file itself.
+        let start = 0;
+        for (;;) {
+          const slash = scoped.indexOf('/', start);
+          const last = slash < 0;
+          if (!last || isDirectory) {
+            const name = last ? scoped.slice(start) : scoped.slice(start, slash);
+            const at = unanchoredLiterals.get(name);
+            if (at !== undefined && at > best) {
+              best = at;
+            }
+          }
+          if (last) break;
+          start = slash + 1;
+        }
+      }
+      if (deepestAnchoredDepth > 0) {
+        // One lookup per depth that actually holds a rule, not one per rule: a path shorter than a rule's depth
+        // costs nothing at all.
+        let depth = 0;
+        let start = 0;
+        for (;;) {
+          const slash = scoped.indexOf('/', start);
+          depth += 1;
+          const last = slash < 0;
+          if (last && !isDirectory) break;
+          if (anchoredDepths[depth] === true) {
+            const prefix = last ? scoped : scoped.slice(0, slash);
+            const at = anchoredLiterals.get(prefix);
+            if (at !== undefined && at > best) {
+              best = at;
+            }
+          }
+          if (last) break;
+          start = slash + 1;
+        }
+      }
+
       // Split once for every `**` rule of this file, and only if one of them is reached: a file whose patterns all
       // compile to a regex pays no split at all (the `*.log`-shaped rule sets of the small workloads).
       let segments = null;
-      for (let index = rules.length - 1; index >= 0; index--) {
+      for (let index = rules.length - 1; index > best; index--) {
         const rule = rules[index];
+        if (rule.indexed) {
+          continue;
+        }
         if (rule.segments !== null && segments === null) {
           segments = scoped.split('/');
         }
         if (matches(rule, scoped, isDirectory, segments)) {
           return !rule.negated;
         }
+      }
+      if (best >= 0) {
+        return !rules[best].negated;
       }
       return undefined;
     },
@@ -293,19 +387,29 @@ export function readGitignore(directoryPath, relativeDirectory) {
  */
 export class GitIgnoreRules {
   #stack = [];
-  // A directory's answer, keyed by its path relative to the walk root. A path list visits the same directories over
+  // A directory's state, keyed by its path relative to the walk root. A path list visits the same directories over
   // and over (`backtrack` asks about 84,000 ancestor directories that are 42 distinct ones), and the rules are a
-  // snapshot, so the answer cannot change while the stack is unchanged. `push`/`pop` clear it: they are the only
-  // things that change which files govern a directory, and a cached "excluded" must never outlive them.
+  // snapshot, so the state cannot change while the stack is unchanged. `push`/`pop` clear it: they are the only
+  // things that change which files govern a directory, and a cached answer must never outlive them.
+  //
+  // The state is the two facts a decision needs about the path's directory: whether it (or an ancestor) is excluded,
+  // and — implicit here — the chain of files that governs it. The chain half is already free in this port because the
+  // walk hands the stack to the decider instead of making it walk up the file system, so the cache pays for the
+  // ancestor half: one map lookup and one `dirname` per decision instead of a lookup and a substring per level.
+  #states = new Map();
+  // The historical walk, kept for a path outside the contract (a leading or trailing separator), where the index key
+  // would be a different one than the walk would ask about. Same shape as the memo it replaced.
   #excluded = new Map();
 
   push(file) {
     this.#stack.push(file);
+    this.#states.clear();
     this.#excluded.clear();
   }
 
   pop() {
     this.#stack.pop();
+    this.#states.clear();
     this.#excluded.clear();
   }
 
@@ -316,12 +420,45 @@ export class GitIgnoreRules {
   decide(relativePath, isDirectory) {
     const direct = this.decideDirect(relativePath, isDirectory);
     if (direct === true) {
+      // A directly excluded path needs no ancestor fact at all — the common case on a rule set with a literal hit.
       return true;
     }
-    // An excluded directory is never entered, so a rule for a file inside it cannot re-include that file: ask the
-    // ancestors, deepest first. A parent that a later rule re-includes answers false and is skipped. The ancestor is
-    // found by walking the separators backwards, so no ancestor costs a split and a join — one substring, which is
-    // also the memo's key.
+    const slash = relativePath.lastIndexOf('/');
+    // The index keys on the directory, and `dirOf` is the substring before the last separator for every path in the
+    // contract (`/`-separated, no leading or trailing slash). A path outside it keeps the historical answer rather
+    // than being answered from an index built on a different key.
+    if (slash === 0 || slash === relativePath.length - 1) {
+      return this.#walkAncestors(relativePath, direct);
+    }
+    if (this.#stateFor(slash < 0 ? '' : relativePath.slice(0, slash)).ancestorExcluded) {
+      return true;
+    }
+    return direct;
+  }
+
+  /**
+   * The ancestor-excluded fact for a directory, inherited: a directory is excluded when its parent is, or when its
+   * own decision through the stack excludes it — exactly the prefix set the per-path walk asked, computed once per
+   * directory instead of once per path per level.
+   */
+  #stateFor(directory) {
+    let state = this.#states.get(directory);
+    if (state !== undefined) {
+      return state;
+    }
+    let ancestorExcluded = false;
+    if (directory !== '') {
+      const slash = directory.lastIndexOf('/');
+      const parent = this.#stateFor(slash < 0 ? '' : directory.slice(0, slash));
+      ancestorExcluded = parent.ancestorExcluded || this.decideDirect(directory, true) === true;
+    }
+    state = { ancestorExcluded };
+    this.#states.set(directory, state);
+    return state;
+  }
+
+  /** The pre-index ancestor walk, used only for a path the index does not key on. */
+  #walkAncestors(relativePath, direct) {
     for (let slash = relativePath.lastIndexOf('/'); slash >= 0; slash = relativePath.lastIndexOf('/', slash - 1)) {
       const ancestor = relativePath.slice(0, slash);
       let excluded = this.#excluded.get(ancestor);

@@ -8,7 +8,9 @@
 package hr.hrg.gitignore;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -51,10 +53,63 @@ public final class GitIgnoreFile {
 
     private final String relativeDirectory;
     private final List<Rule> rules;
+    /**
+     * Directory-only literal rules, indexed instead of scanned — they are the class a per-path decision asks about
+     * most, and the one whose scan costs a prefix walk per rule.
+     *
+     * <p>Two forms, because the question differs: an anchored literal is a whole path prefix
+     * ({@code module0/src/main/java/}), so it is keyed by that path and looked up once per depth the path has; an
+     * unanchored one is a single name ({@code build/}), so it is keyed by the name and looked up once per segment. A
+     * literal can only match a prefix of exactly its own depth, which is what {@link #anchoredDepths} preserves:
+     * {@code java/fory-0/...} is rejected against a {@code java/fory-1/...} rule by the lookup itself, the case a
+     * first-segment prune cannot see. The reference has a {@code u256} mask; a plain array is the Java equivalent and
+     * a pattern deeper than {@link #MAX_INDEXED_DEPTH} stays on the scanned path, where the answer is still correct.
+     *
+     * <p>Keys are the highest rule position for that literal, so a later rule overrides an earlier one, exactly as
+     * the scanned list's reverse iteration would.
+     */
+    private final Map<String, Integer> anchoredLiterals;
+    private final Map<String, Integer> unanchoredLiterals;
+    private final boolean[] anchoredDepths;
+    private final int deepestAnchoredDepth;
+
+    private static final int MAX_INDEXED_DEPTH = 256;
 
     private GitIgnoreFile(String relativeDirectory, List<Rule> rules) {
         this.relativeDirectory = relativeDirectory;
-        this.rules = rules;
+        Map<String, Integer> anchored = new HashMap<>();
+        Map<String, Integer> unanchored = new HashMap<>();
+        boolean[] depths = new boolean[MAX_INDEXED_DEPTH + 1];
+        int deepest = 0;
+        for (int index = 0; index < rules.size(); index++) {
+            Rule rule = rules.get(index);
+            if (!rule.directoryOnly() || rule.literal() == null) {
+                continue;
+            }
+            if (rule.anchored()) {
+                int depth = 1;
+                for (int at = rule.literal().indexOf('/'); at >= 0; at = rule.literal().indexOf('/', at + 1)) {
+                    depth++;
+                }
+                if (depth > MAX_INDEXED_DEPTH) {
+                    continue;
+                }
+                anchored.put(rule.literal(), index);
+                depths[depth] = true;
+                if (depth > deepest) {
+                    deepest = depth;
+                }
+            } else {
+                unanchored.put(rule.literal(), index);
+            }
+            rules.set(index, rule.indexedCopy());
+        }
+        this.anchoredLiterals = anchored;
+        this.unanchoredLiterals = unanchored;
+        this.anchoredDepths = depths;
+        this.deepestAnchoredDepth = deepest;
+        // After the index has marked its rules: the list is the immutable one the decision iterates.
+        this.rules = List.copyOf(rules);
     }
 
     /**
@@ -74,7 +129,7 @@ public final class GitIgnoreFile {
                 rules.add(rule);
             }
         }
-        return new GitIgnoreFile(directory, List.copyOf(rules));
+        return new GitIgnoreFile(directory, rules);
     }
 
     /** Reads {@code directory/.gitignore} when it exists; empty when the directory has none. */
@@ -120,13 +175,69 @@ public final class GitIgnoreFile {
         if (scoped == null) {
             return Optional.empty();
         }
+        // Ask the index first. `best` is the highest rule position any indexed rule can reach for this path, so only
+        // rules after it can override the answer — usually none, and then the path is answered without a split.
+        int best = -1;
+        if (!unanchoredLiterals.isEmpty()) {
+            // An unanchored directory rule names one segment, and for a file the last segment is the file itself.
+            int start = 0;
+            while (true) {
+                int slash = scoped.indexOf('/', start);
+                boolean last = slash < 0;
+                if (!last || isDirectory) {
+                    String name = last ? scoped.substring(start) : scoped.substring(start, slash);
+                    Integer at = unanchoredLiterals.get(name);
+                    if (at != null && at > best) {
+                        best = at;
+                    }
+                }
+                if (last) {
+                    break;
+                }
+                start = slash + 1;
+            }
+        }
+        if (deepestAnchoredDepth > 0) {
+            // One lookup per depth that actually holds a rule, not one per rule: a path shorter than a rule's depth
+            // costs nothing at all.
+            int depth = 0;
+            int start = 0;
+            while (true) {
+                int slash = scoped.indexOf('/', start);
+                depth++;
+                boolean last = slash < 0;
+                if (last && !isDirectory) {
+                    break;
+                }
+                if (depth <= MAX_INDEXED_DEPTH && anchoredDepths[depth]) {
+                    String prefix = last ? scoped : scoped.substring(0, slash);
+                    Integer at = anchoredLiterals.get(prefix);
+                    if (at != null && at > best) {
+                        best = at;
+                    }
+                }
+                if (last) {
+                    break;
+                }
+                start = slash + 1;
+            }
+        }
         // One split per decision: the array is the same for every rule, and a file with 8 rules used to split 8 times.
-        String[] parts = scoped.split("/", -1);
-        for (int index = rules.size() - 1; index >= 0; index--) {
+        String[] parts = null;
+        for (int index = rules.size() - 1; index > best; index--) {
             Rule rule = rules.get(index);
+            if (rule.indexed()) {
+                continue;
+            }
+            if (parts == null) {
+                parts = scoped.split("/", -1);
+            }
             if (rule.matches(scoped, parts, isDirectory)) {
                 return Optional.of(!rule.negated());
             }
+        }
+        if (best >= 0) {
+            return Optional.of(!rules.get(best).negated());
         }
         return Optional.empty();
     }
@@ -141,7 +252,13 @@ public final class GitIgnoreFile {
     }
 
     /** One pattern: its polarity, whether it is directory-only, and its compiled form. */
-    private record Rule(boolean negated, boolean directoryOnly, Glob.Segment[] segments) {
+    private record Rule(boolean negated, boolean directoryOnly, boolean anchored, String literal, boolean indexed,
+            Glob.Segment[] segments) {
+
+        /** The same rule, marked as answered by the file's literal index rather than scanned. */
+        Rule indexedCopy() {
+            return new Rule(negated, directoryOnly, anchored, literal, true, segments);
+        }
 
         /**
          * Parses one line: {@code null} for a blank line or a comment.
@@ -170,9 +287,14 @@ public final class GitIgnoreFile {
             if (line.isEmpty()) {
                 return null;
             }
+            // A plain name (no wildcard, no escape) is indexed rather than scanned; the directory-only ones are what
+            // a per-path decision asks about most. The test is exactly the one Glob.Segment.of uses for "literal".
+            boolean plain = line.indexOf('*') < 0 && line.indexOf('?') < 0 && line.indexOf('[') < 0
+                    && line.indexOf('\\') < 0;
             // The path is matched by the segment DP; only the per-segment regexes are compiled here, which is also
             // where character classes and escapes are understood.
-            return new Rule(negated, directoryOnly, Glob.compile(line, anchored, segment -> translate(segment)));
+            return new Rule(negated, directoryOnly, anchored, plain ? line : null, false,
+                    Glob.compile(line, anchored, segment -> translate(segment)));
         }
 
         /** Whether this pattern excludes {@code path} (which is already scoped to its own directory). */

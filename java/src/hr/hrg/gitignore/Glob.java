@@ -77,6 +77,23 @@ final class Glob {
      */
     static boolean matches(Segment[] segments, String[] text, int count) {
         int limit = count < 0 ? text.length : count;
+        // The pattern's last segment, when it is not `**`, has to match the last segment the call considers — otherwise
+        // the whole DP is spent on a match that cannot exist. `limit` is the first `limit` segments, so the last
+        // considered text segment is `text[limit - 1]` (the path's own last segment only when the whole path is being
+        // matched); a directory-only ancestor question passes its own last considered segment this way.
+        if (limit > 0) {
+            Segment tail = segments[segments.length - 1];
+            if (!tail.doubleStar()) {
+                String textTail = text[limit - 1];
+                if (tail.literal() != null) {
+                    if (!tail.literal().equals(textTail)) {
+                        return false;
+                    }
+                } else if (!tail.regex().matcher(textTail).matches()) {
+                    return false;
+                }
+            }
+        }
         boolean[][] scratch = SCRATCH.get();
         if (scratch[0] == null || scratch[0].length < limit + 1) {
             scratch[0] = new boolean[limit + 1];
