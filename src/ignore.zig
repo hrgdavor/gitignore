@@ -25,6 +25,13 @@ const gitignore = @import("gitignore.zig");
 const SuffixEntry = struct { suffix: []const u8, at: usize };
 const RuleEntry = struct { rule: gitignore.Rule, at: usize };
 
+/// Below this many last-segment-bucket rules in a chain, the bucket is not built and those rules stay on the
+/// scanned path. Two is the measured line for this port (`doc/performance/zig.md`): `backtrack`'s two bucket rules
+/// are what the bucket is for here — a rule whose tail check went through the `**` matcher — and paid 26.5% and
+/// 31.2% in two paired sessions, while `doublestar`'s seventeen are a wash because its suffix scan is already a
+/// bare `endsWith` list. A chain of one would pay a hash lookup to replace a single comparison.
+const bucket_min_rules: usize = 2;
+
 /// The directory cache's key equality. A path list repeats the same directory string for a whole run, and on
 /// this toolchain `std.mem.eql` costs ~550 ns for a 207-byte key where this word-at-a-time XOR costs ~32 ns
 /// (measured: `backtrack`'s 28.9 ms was 13.9 ms of directory lookups, of which the hash itself was 0.7 ms and
@@ -78,9 +85,19 @@ const Chain = struct {
     /// Unanchored general globs: matched against the final segment (or any segment, for directory-only).
     wilds: []RuleEntry = &.{},
     /// Rules that carry a path (`x/**`, `a/**/b`): matched against the whole path and its prefixes.
-    /// Anchored literal rules are not here; `literal_dirs` answers the directory-only ones, and the rest are
-    /// a plain `pat` whose one path comparison is cheaper than an index walk.
+    /// Anchored literal rules are not here; `literal_dirs` answers the directory-only ones, the exact ones live
+    /// in `base_literals`, and the rest are a plain `pat` whose one path comparison is cheaper than an index walk.
     anchored: []RuleEntry = &.{},
+    /// Non-directory-only rules whose **last segment** is exactly literal (`build.gradle`, `src/**/target`),
+    /// keyed by that segment and holding the chain positions of every rule with that tail, in ascending
+    /// position (best precedence first). A path whose base name is anything else cannot match one of them, so
+    /// the whole general scan skips it. This is the file-side counterpart of `literal_dirs`, which cannot help
+    /// a rule that names a *file*: `literal_dirs` is keyed by a whole directory prefix.
+    base_literals: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .{},
+    /// Non-directory-only rules whose **last segment** is `*.ext`-shaped, keyed by the literal tail from its
+    /// last `.` (`*.class` -> `.class`, `*.class.txt` -> `.txt`). A base name ending in a different extension
+    /// cannot match one, and a base that ends in the bucket's extension still verifies the whole rule.
+    base_suffixes: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .{},
     /// Directory-only anchored literal rules, keyed by their literal path. A `foo/bar/` rule can only match a
     /// path whose first two segments are exactly `foo/bar`, so the decision asks each prefix it might match
     /// instead of testing every rule. This is what removes the "all 100 rules share the first segment `java`"
@@ -127,6 +144,32 @@ const Chain = struct {
                 }
                 if (last_segment) break;
                 cursor = slash + 1;
+            }
+        }
+
+        // The last-segment buckets. A hit is a *candidate*: the last segment is necessary, not sufficient, so the
+        // rule is verified against the whole path; and because the lists are ascending, the first verified one is
+        // the highest precedence in its bucket. Setting `best` here is what makes the ordered scans below skip
+        // every rule that a later (lower-position) bucket rule already beats — and a scan rule at a lower position
+        // still wins, because the scan lists are ascending and stop only at positions worse than `best`.
+        if (self.base_literals.get(base)) |positions| {
+            for (positions.items) |at| {
+                if (best) |limit| if (at > limit) break;
+                if (chainRuleMatches(self.items[at], path, base, is_dir)) {
+                    best = at;
+                    break;
+                }
+            }
+        }
+        if (baseExtension(base)) |extension| {
+            if (self.base_suffixes.get(extension)) |positions| {
+                for (positions.items) |at| {
+                    if (best) |limit| if (at > limit) break;
+                    if (chainRuleMatches(self.items[at], path, base, is_dir)) {
+                        best = at;
+                        break;
+                    }
+                }
             }
         }
 
@@ -220,6 +263,55 @@ fn baseName(path: []const u8) []const u8 {
     return path[slash + 1 ..];
 }
 
+/// Whether `text` holds a byte that needs the matcher: a wildcard or an escape. This is the same test
+/// `gitignore.hasWildcard` makes, repeated here because nothing outside `gitignore.zig` can see it.
+fn hasWildcardByte(text: []const u8) bool {
+    for (text) |byte| switch (byte) {
+        '\\', '*', '?', '[' => return true,
+        else => {},
+    };
+    return false;
+}
+
+/// Where a rule's last segment belongs: no bucket, an exact-literal base name, or a `*.ext`-shaped tail.
+const BucketKey = union(enum) {
+    none,
+    literal: []const u8,
+    suffix: []const u8,
+};
+
+/// Classifies a rule by its **last segment**, the same way `gitignore.Rule` classifies a whole pattern.
+///
+/// Directory-only rules are never bucketed: their match can be an ancestor directory, whose base name is not
+/// the path's, so a base-name key would reject a path the rule really excludes. An unanchored literal is
+/// already answered by `Chain.literals`, and it needs no verification at all.
+fn bucketKey(rule: gitignore.Rule) BucketKey {
+    if (rule.directory_only) return .none;
+    if (!rule.anchored and rule.kind == .literal) return .none;
+    const tail = baseName(rule.glob);
+    if (tail.len == 0) return .none;
+    if (!hasWildcardByte(tail)) return .{ .literal = tail };
+    // Exactly one leading `*`, then a dot and a literal run: the shape the suffix bucket can key on. A tail
+    // with any other wildcard, or with an escape, cannot be decided by a whole extension.
+    if (tail.len >= 3 and tail[0] == '*' and tail[1] == '.' and !hasWildcardByte(tail[1..])) {
+        const after_star = tail[1..];
+        const dot = std.mem.lastIndexOfScalar(u8, after_star, '.') orelse 0;
+        return .{ .suffix = after_star[dot..] };
+    }
+    return .none;
+}
+
+/// The extension a base name is bucketed by: from its **last** `.` to its end (`""` → null).
+///
+/// A rule tail that starts with `.` and is a suffix of the base has the same last-dot extension as the base:
+/// `Foo.class.txt` and `*.class.txt` both end at `.txt`. Keying the bucket by that extension is therefore a
+/// superset filter — the rule itself is still verified — and it is a hash lookup, not a scan of suffixes.
+fn baseExtension(base: []const u8) ?[]const u8 {
+    if (base.len == 0) return null;
+    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return null;
+    return base[dot..];
+}
+
 /// The directory part of a `/`-separated path: everything before its last slash, `""` at the root. For a path
 /// in the contract — `/`-separated, no leading or trailing slash — this is exactly `std.fs.path.dirname`, and
 /// it is the string the old ancestor walk's largest prefix ended at.
@@ -285,6 +377,12 @@ pub const Stack = struct {
             entry.value_ptr.*.literals.deinit(self.arena);
             entry.value_ptr.*.literals_dir_only.deinit(self.arena);
             entry.value_ptr.*.literal_dirs.deinit(self.arena);
+            var literal_it = entry.value_ptr.*.base_literals.iterator();
+            while (literal_it.next()) |bucket| bucket.value_ptr.deinit(self.arena);
+            entry.value_ptr.*.base_literals.deinit(self.arena);
+            var suffix_it = entry.value_ptr.*.base_suffixes.iterator();
+            while (suffix_it.next()) |bucket| bucket.value_ptr.deinit(self.arena);
+            entry.value_ptr.*.base_suffixes.deinit(self.arena);
             self.arena.free(entry.value_ptr.*.suffixes);
             self.arena.free(entry.value_ptr.*.wilds);
             self.arena.free(entry.value_ptr.*.anchored);
@@ -455,6 +553,27 @@ pub const Stack = struct {
         const key = deepest orelse return null;
         if (self.chains.get(key)) |chain| return chain;
 
+        // How many rules the last-segment buckets would hold, taken before any scoping work because prepending a
+        // directory does not change a pattern's last segment. A chain too small for the buckets keeps every rule
+        // on the scanned path, which is where it was before this index existed.
+        var bucket_count: usize = 0;
+        {
+            var counted: []const u8 = key;
+            while (true) {
+                if (try self.rulesFor(counted)) |parsed| {
+                    for (parsed.items) |rule| switch (bucketKey(rule)) {
+                        .none => {},
+                        else => bucket_count += 1,
+                    };
+                }
+                if (counted.len <= self.root.len) break;
+                const parent = std.fs.path.dirname(counted) orelse break;
+                if (parent.len >= counted.len) break;
+                counted = parent;
+            }
+        }
+        const use_buckets = bucket_count >= bucket_min_rules;
+
         // Deepest first, each file reversed; anchored patterns scoped with their owner's path.
         var items: std.ArrayListUnmanaged(gitignore.Rule) = .empty;
         var suffixes: std.ArrayListUnmanaged(SuffixEntry) = .empty;
@@ -484,6 +603,24 @@ pub const Stack = struct {
                     }
                     const position = items.items.len;
                     try items.append(self.arena, rule);
+                    // A last-segment bucket rule leaves the scanned lists entirely; its candidate is looked up by
+                    // the path's base name (or extension) before the scan, and the scan's own ordering decides
+                    // whether a general rule after it overrides it.
+                    if (use_buckets) switch (bucketKey(rule)) {
+                        .none => {},
+                        .literal => |bucket| {
+                            const entry = try chain.base_literals.getOrPut(self.arena, bucket);
+                            if (!entry.found_existing) entry.value_ptr.* = .empty;
+                            try entry.value_ptr.append(self.arena, position);
+                            continue;
+                        },
+                        .suffix => |bucket| {
+                            const entry = try chain.base_suffixes.getOrPut(self.arena, bucket);
+                            if (!entry.found_existing) entry.value_ptr.* = .empty;
+                            try entry.value_ptr.append(self.arena, position);
+                            continue;
+                        },
+                    };
                     if (rule.kind == .literal and !rule.anchored) {
                         const map = if (rule.directory_only) &chain.literals_dir_only else &chain.literals;
                         if (!map.contains(rule.glob)) try map.put(self.arena, rule.glob, position);
@@ -830,4 +967,64 @@ test "asking about a path warms the directory cache without changing the next an
     try testing.expect(!try decide_first.ignored(root, "out", true));
     try testing.expectEqual(@as(?bool, null), try decide_first.decide("out/x/y", false));
     try testing.expect(!try decide_first.ignored(excluded_child, "y", false));
+}
+
+test "last-segment buckets keep git's last-match-wins order" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    // Every case carries at least `bucket_min_rules` bucket rules, so the index is actually built. Each path is
+    // decided through `decide` (the bucket) and `decideNaive` (every rule scanned), which is the differential
+    // argument in miniature: the index may change which questions are asked, never the answer.
+    const Case = struct {
+        name: []const u8,
+        rules: []const u8,
+        path: []const u8,
+        is_dir: bool = false,
+        expected: ?bool,
+    };
+    const cases = [_]Case{
+        // A general rule later in the file (a wildcard negation, here) overrides a suffix-bucket hit.
+        .{ .name = "a later wildcard negation overrides a suffix bucket", .rules = "*.log\n*.tmp\n*.class\n*.jar\n!keep*\n", .path = "keep.log", .expected = false },
+        .{ .name = "the wildcard negation is the only rule for another extension", .rules = "*.log\n*.tmp\n*.class\n*.jar\n!keep*\n", .path = "other.log", .expected = true },
+        // A negation after the bucket rule: the literal index wins because it is later in the file.
+        .{ .name = "a negation after a suffix bucket re-includes", .rules = "*.log\n*.tmp\n*.class\n*.jar\n!keep.log\n", .path = "keep.log", .expected = false },
+        .{ .name = "the same bucket still excludes a sibling", .rules = "*.log\n*.tmp\n*.class\n*.jar\n!keep.log\n", .path = "other.log", .expected = true },
+        // A bucket rule after a negation: the later exclusion must win over the earlier re-include.
+        .{ .name = "a bucket rule after a negation excludes", .rules = "!keep.log\n*.log\n*.tmp\n*.class\n*.jar\n", .path = "keep.log", .expected = true },
+        .{ .name = "the earlier negation does not reach another name", .rules = "!keep.log\n*.log\n*.tmp\n*.class\n*.jar\n", .path = "keep.txt", .expected = null },
+        // The extension key is a superset filter: `*.class.txt` is looked up under `.txt`, and a name that does
+        // not end `.class.txt` falls through to the rule at the next position, not to "no match".
+        .{ .name = "a failing multi-dot candidate falls to the later suffix", .rules = "*.txt\n*.class.txt\n*.log\n*.tmp\n", .path = "Foo.txt", .expected = true },
+        .{ .name = "the multi-dot suffix still matches its own tail", .rules = "*.txt\n*.class.txt\n*.log\n*.tmp\n", .path = "Foo.class.txt", .expected = true },
+        .{ .name = "an unrelated extension reaches no bucket", .rules = "*.txt\n*.class.txt\n*.log\n*.tmp\n", .path = "Foo.md", .expected = null },
+        // The same fall-through, with the narrower candidate a negation: the later negation must re-include only
+        // `*.class.txt`, while `*.txt` still excludes its other names.
+        .{ .name = "a failing negation candidate leaves the broader suffix", .rules = "*.txt\n!*.class.txt\n*.log\n*.tmp\n", .path = "Foo.class.txt", .expected = false },
+        .{ .name = "the broader suffix excludes what the negation did not name", .rules = "*.txt\n!*.class.txt\n*.log\n*.tmp\n", .path = "Foo.txt", .expected = true },
+        // The literal bucket and the suffix bucket are two candidate classes: the lower chain position wins even
+        // when it is a different class, and the scan's ordering is what makes that true.
+        .{ .name = "a later anchored literal overrides a suffix-bucket negation", .rules = "!*.log\n*.tmp\n*.class\n*.jar\n/keep.log\n", .path = "keep.log", .expected = true },
+        .{ .name = "the suffix-bucket negation still re-includes another name", .rules = "!*.log\n*.tmp\n*.class\n*.jar\n/keep.log\n", .path = "other.log", .expected = false },
+    };
+
+    for (cases) |case| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try tmp.dir.writeFile(io, .{ .sub_path = gitignore.file_name, .data = case.rules });
+
+        var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const count = try tmp.dir.realPath(io, &path_buffer);
+        var arena_alloc = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena_alloc.deinit();
+        const arena = arena_alloc.allocator();
+        const root = try arena.dupe(u8, path_buffer[0..count]);
+
+        var stack = Stack.init(arena, io, root, true);
+        defer stack.deinit();
+        errdefer std.debug.print("case failed: {s}\n", .{case.name});
+
+        try testing.expectEqual(case.expected, try stack.decide(case.path, case.is_dir));
+        try testing.expectEqual(case.expected, try stack.decideNaive(case.path, case.is_dir));
+    }
 }

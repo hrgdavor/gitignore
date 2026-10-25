@@ -33,6 +33,11 @@ pub fn build(b: *std.Build) void {
             module.addAnonymousImport("vectors.json", .{
                 .root_source_file = b.path(vectors_path),
             });
+            // The ordering cases are a second, separate document: the 34 vectors are the git-verified matcher
+            // contract, and these pin the decision order a last-segment bucket must not change.
+            module.addAnonymousImport("ordering.json", .{
+                .root_source_file = b.path("conformance/ordering-vectors.json"),
+            });
         }
         const tests = b.addTest(.{ .root_module = module });
         test_step.dependOn(&b.addRunArtifact(tests).step);

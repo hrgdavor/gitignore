@@ -123,6 +123,46 @@ function translateCharacterClass(glob, open) {
 /** A pattern segment with none of these bytes is a plain name, so a directory-only rule can be indexed by it. */
 const hasWildcardByte = /[*?[\\]/;
 
+/**
+ * Below this many last-segment-bucket rules in a file, the bucket is not built and those rules are scanned. Four is
+ * the measured line for this port (`doc/performance/js.md`): `doublestar`'s 28 bucket rules are 33-35% faster
+ * with the bucket and `deep`'s five are 1.7-11.4% — below the ~13% noise floor, so not evidence — while `flat`
+ * (three) and `backtrack` (two) stay on the scan, where they act as this change's noise controls. It is the same
+ * shape as the unanchored-name index's gate: a map lookup has to replace more than one cheap test to pay.
+ */
+const BUCKET_MIN_RULES = 4;
+
+/**
+ * Classify a rule by its **last segment**, the file-side counterpart of the reference's `Chain.literal_dirs`.
+ *
+ * Directory-only rules are never bucketed: their match can be an ancestor directory, whose base name is not the
+ * path's, so a base-name key would reject a path the rule really excludes. A plain unanchored name also stays on the
+ * scan: it is one compiled segment test and it already has no prefix to verify. The bucket is for rules whose scan
+ * costs a whole-path verification.
+ */
+function bucketKeyOf(rule) {
+  if (rule.directoryOnly) {
+    return null;
+  }
+  if (!rule.anchored && rule.literal !== null) {
+    return null;
+  }
+  const tail = rule.lastSegment;
+  if (tail.length === 0) {
+    return null;
+  }
+  if (!hasWildcardByte.test(tail)) {
+    return { kind: 'literal', value: tail };
+  }
+  if (tail.length >= 3 && tail[0] === '*' && tail[1] === '.' && !hasWildcardByte.test(tail.slice(1))) {
+    // Key by the tail's own last-dot extension, so `*.class.txt` is reached by `Foo.class.txt` as well as by
+    // `*.txt`'s names; the rule itself is still verified, so this is a superset filter, not the answer.
+    const afterStar = tail.slice(1);
+    return { kind: 'suffix', value: afterStar.slice(afterStar.lastIndexOf('.')) };
+  }
+  return null;
+}
+
 /** One parsed pattern. */
 function parseRule(rawLine) {
   let line = stripTrailingUnescapedSpaces(rawLine);
@@ -160,6 +200,9 @@ function parseRule(rawLine) {
     negated,
     directoryOnly,
     anchored,
+    // The raw last segment, kept for the last-segment buckets: the bucket needs the *string* (a literal tail, or
+    // the `*.ext` shape to key by), not only the compiled test.
+    lastSegment,
     // A plain name (no wildcard, no escape) is indexed rather than scanned: the directory-only ones are what a
     // per-path prefix walk asks about most, and a name is the whole question for the unanchored form.
     literal: hasWildcardByte.test(line) ? null : line,
@@ -252,6 +295,33 @@ export function parseGitignore(relativeDirectory, text) {
   // The unanchored literals as parallel arrays, so a small set is scanned without a map lookup per segment.
   const unanchoredNames = [...unanchoredLiterals.keys()];
   const unanchoredRules = unanchoredNames.map((name) => unanchoredLiterals.get(name));
+
+  // The last-segment buckets: a file-side counterpart of the anchored-directory index above. A rule whose last
+  // segment is a literal base name (`src/**/target`) is keyed by that name; one whose last segment is `*.ext`-shaped
+  // (`src/**/*.g4`) is keyed by the tail's last-dot extension. Both are necessary conditions, not answers: the rule
+  // is verified against the whole path before it can set `best`, and the scan above it still decides a later rule.
+  // Directory-only rules are excluded because an ancestor can match, and its base name is not the path's.
+  const baseLiterals = new Map();
+  const baseSuffixes = new Map();
+  const bucketable = [];
+  for (let index = 0; index < rules.length; index++) {
+    const key = bucketKeyOf(rules[index]);
+    if (key !== null) {
+      bucketable.push({ index, kind: key.kind, value: key.value });
+    }
+  }
+  if (bucketable.length >= BUCKET_MIN_RULES) {
+    for (const { index, kind, value } of bucketable) {
+      const map = kind === 'literal' ? baseLiterals : baseSuffixes;
+      let positions = map.get(value);
+      if (positions === undefined) {
+        positions = [];
+        map.set(value, positions);
+      }
+      positions.push(index);
+      rules[index].indexed = true;
+    }
+  }
   return {
     relativeDirectory: directory,
     ruleCount: rules.length,
@@ -334,6 +404,15 @@ export function parseGitignore(relativeDirectory, text) {
         }
       }
 
+      // The last-segment buckets are candidate sources, not answers. A hit's last segment is only a necessary
+      // condition, so the rule is verified against the whole path; the positions are ascending, so the highest
+      // matching index in a bucket is its winner, and `best` is then compared with any general rule above it by
+      // the scan below (`index > best`), which is exactly git's later-pattern-wins order. The whole lookup is a
+      // separate function so a file without buckets (the `flat` rule set) keeps this method small.
+      if (baseLiterals.size > 0 || baseSuffixes.size > 0) {
+        best = bucketBest(rules, baseLiterals, baseSuffixes, scoped, isDirectory, best);
+      }
+
       // Split once for every rule of this file that needs segments, and only when one of them is actually reached
       // *and* survives the last-segment precheck on the raw path: a file whose patterns all compile to a regex pays
       // no split at all (the `*.log`-shaped rule sets of the small workloads), and a DP rule whose final segment
@@ -386,6 +465,57 @@ function endsWithSegment(path, literal) {
 function lastSegmentOf(path) {
   const slash = path.lastIndexOf('/');
   return slash < 0 ? path : path.slice(slash + 1);
+}
+
+/**
+ * The best rule index reachable through the last-segment buckets for `path`, or `best` unchanged.
+ *
+ * The base name is looked up in the literal bucket; its last-dot extension in the suffix bucket. Both lookups are
+ * superset filters — a hit still goes through `bucketCandidate`, which verifies the whole rule.
+ */
+function bucketBest(rules, baseLiterals, baseSuffixes, path, isDirectory, best) {
+  const base = lastSegmentOf(path);
+  const literalPositions = baseLiterals.get(base);
+  if (literalPositions !== undefined) {
+    best = bucketCandidate(rules, literalPositions, best, path, isDirectory);
+  }
+  const dot = base.lastIndexOf('.');
+  if (dot >= 0) {
+    const suffixPositions = baseSuffixes.get(base.slice(dot));
+    if (suffixPositions !== undefined) {
+      best = bucketCandidate(rules, suffixPositions, best, path, isDirectory);
+    }
+  }
+  return best;
+}
+
+/**
+ * The highest rule index in one last-segment bucket that actually matches, or `best` unchanged.
+ *
+ * The positions are ascending, so walking them downwards finds the last matching pattern of the bucket first: the
+ * first verified index at or above `best` is that class's winner, and a rule that fails its whole-path verification
+ * falls through to the next position rather than to "no match". Kept as a module-level function, not a closure
+ * created inside `decide`, because one allocation per decision was measurable on `backtrack`.
+ */
+function bucketCandidate(rules, positions, best, path, isDirectory) {
+  for (let at = positions.length - 1; at >= 0; at -= 1) {
+    const index = positions[at];
+    if (index <= best) {
+      break;
+    }
+    const rule = rules[index];
+    let segments = null;
+    if (rule.segments !== null) {
+      if (!tailMatches(rule, path)) {
+        continue;
+      }
+      segments = path.split('/');
+    }
+    if (matches(rule, path, isDirectory, segments, null)) {
+      return index;
+    }
+  }
+  return best;
 }
 
 /**

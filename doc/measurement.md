@@ -246,3 +246,32 @@ side) moved by up to 22%, which is what the process floor looks like. After the 
 
 This was found by measuring a residual, not by looking for an optimisation: the number came out of a leave-one-out attribution
 that was checking something else entirely.
+
+
+## "Last-segment buckets, 2026-10-25"
+
+Add a session row/section with:
+- **Baseline:** `git worktree add .tmp/base HEAD` (921d803) — never a stash, never a rebuild of this tree; Zig
+  `-Doptimize=ReleaseFast` in the worktree, Java `javac` of the worktree's `java/src` into `.tmp/base-java-out`, JS
+  run straight from `.tmp/base/js/decide.mjs`.
+- **Protocol:** paired alternating A/B, 9 pairs, one fresh process per run, `--rounds 12`, min of 9 per side, A/B
+  order reversed every pair; one start-up floor per port (`min` of both sides' empty-path-list minima), subtracted
+  from both sides, so the paired difference is exactly the raw minimum difference and does not inherit start-up
+  noise (the earlier protocol's per-side subtraction shifted every workload by the start-up delta — 0.5 ms on JS is
+  8% of `flat`).
+- **What the controls said:** workloads where no bucket is built moved up to ±18% between sides (JS `flat` +20.2%
+  and `anchored` +17.3% in session 2, `dirs` +15.8% in session 1; Java `dirs` +15.8% then +3.8%; Zig `anchored`
+  +8.9% then −6.1%). That is the floor, and it is why only `deep`/`doublestar` (Java), `doublestar` (JS) and
+  `backtrack` (Zig) are called wins.
+- **Verdicts:** every paired run's stdout compared byte for byte; all six workloads agreed for all three ports in
+  both sessions; `bun scripts/check-verdicts.mjs` says 6/6 and 10,000 byte-identical.
+- **Differential fuzz:** `.tmp/fuzz-vectors.mjs` generated 1,286 git-verified decisions from 400 random multi-file
+  stacks (`.gitignore` at 1-3 depths, bucket-heavy rules, duplicate bucket keys, negations, anchored tails; every
+  candidate decided by `git check-ignore -v --no-index` under git 2.54, file cases only because git prints no
+  negation for a directory path). Both the working tree and the `.tmp/base` build answered 1,286/1,286 for Zig and
+  1,283/1,286 for JS and Java — the same three cases, where the pre-existing dir-only-negation divergence above
+  disagrees with git identically in the baseline. Plus `.tmp/fuzz-js-bucket.mjs`: 12,000 decisions over 400 random
+  stacks including directory paths, working tree vs the pre-change JS module, 0 disagreements.
+- **Gate:** `bun js/conformance.mjs` 34/34; `bun java/run.mjs` 34/34 + ordering 11/11; `bun test` 45 pass
+  (34 + 11); `bun scripts/check-verdicts.mjs` 6/6, 10,000; `zig build test --cache-dir .zig-cache/finishsuffix` on a
+  fresh cache 56/56.

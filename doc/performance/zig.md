@@ -221,3 +221,32 @@ numbers", item 5.
 - **`decideNaive` has one known disagreement with git** (nested unanchored `out/`), documented at `9fb0d30`. Until it is
   settled, the differential fuzz's oracle has a hole, and any disagreement the fuzz reports in that shape is the oracle's
   fault rather than the matcher's.
+
+
+## "Last-segment buckets (backtrack −27/−31%, total −4 to −11%)"
+
+**Measured effect.** Same protocol (start-up 4.68 → 4.65 ms), session 1:
+
+| workload   | before | after | delta      | before ns/dec | after ns/dec | bucket built |
+| ---------- | -----: | ----: | ---------: | ------------: | -----------: | ------------ |
+| flat       | 0.74   | 0.79  | +7.4%      | 62            | 66           | yes (3)      |
+| deep       | 5.72   | 5.55  | −3.0%      | 239           | 231          | yes (5)      |
+| doublestar | 6.14   | 6.15  | +0.3%      | 256           | 256          | yes (17)     |
+| anchored   | 4.30   | 4.69  | +8.9%      | 179           | 195          | no (0)       |
+| dirs       | 1.65   | 1.57  | −4.7%      | 138           | 131          | no (0)       |
+| backtrack  | 3.99   | 2.93  | **−26.5%** | 166           | 122          | yes (2)      |
+| total      | 22.54  | 21.69 | −3.8%      |               |              |              |
+
+Session 2: `backtrack` 4.10 → 2.82 ms (**−31.2%**), total 24.55 → 21.81 (−11.1%), controls `anchored` −6.1% / `dirs`
+−4.0% (and `flat` −27.1% on a ~1 ms workload, which is why it is not quoted as a win). `doublestar` moved +0.3% /
+−11.3%: the bucket is built there but does not pay, because this port's suffix list is already a bare `endsWith` and
+its tail precheck is `wildMatchSegment`, not a DP entry. `deep` is neutral. `bucket_min_rules = 2` is what makes the
+`backtrack` case build a bucket at all; it is the only Zig win above the floor, and its cause is specific: the
+`src/**/.../*.g4` rule was verified by the glob matcher for every path, and the bucket's `.g4` miss replaces that with
+one hash lookup.
+
+**Risk.** As shared.md. Above-the-floor evidence exists for `backtrack` only; `flat`/`deep`/`doublestar` are neutral
+within noise, so nothing was reverted and nothing is claimed for them. **Left:** the JS/Java dir-only-negation
+divergence is not a Zig problem; Zig agrees with git on all three fuzz cases.
+
+---

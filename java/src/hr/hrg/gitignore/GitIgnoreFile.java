@@ -75,10 +75,35 @@ public final class GitIgnoreFile {
     private final int[] unanchoredRules;
     private final boolean[] anchoredDepths;
     private final int deepestAnchoredDepth;
+    /**
+     * Non-directory-only rules whose last segment is exactly literal ({@code build.gradle}, {@code src/**}{@code /target}),
+     * keyed by that segment. Each value is every rule position with that tail, ascending — the caller walks it
+     * downwards, so the first match is the last matching pattern of that bucket, and a later general rule still wins
+     * because the scan above {@code best} is what decides.
+     *
+     * <p>This is the file-side counterpart of {@link #anchoredLiterals}: that index is keyed by a whole directory
+     * prefix, so it cannot help a rule that names a file. A path whose base name differs cannot match one of these
+     * rules at all, which is one lookup instead of a whole-path comparison per rule.</p>
+     */
+    private final Map<String, int[]> baseLiterals;
+    /**
+     * The same, for rules whose last segment is {@code *.ext}-shaped, keyed by the tail's last-dot extension
+     * ({@code *.class} → {@code .class}, {@code *.class.txt} → {@code .txt}). A base name ending in a different
+     * extension cannot match; one that ends in the bucket's extension still verifies the whole rule.
+     */
+    private final Map<String, int[]> baseSuffixes;
 
     private static final int MAX_INDEXED_DEPTH = 256;
     /** Below this many unanchored directory literals, a direct literal scan replaces the name index. */
     private static final int UNANCHORED_INDEX_MIN = 4;
+    /**
+     * Below this many last-segment-bucket rules, the bucket is not built and those rules stay on the scanned path.
+     * Four is the measured line for this port ({@code doc/performance/java.md}): {@code deep}'s five bucket rules are
+     * 41.5% and 46.1% faster with the bucket (its {@code *.ext} tail checks each allocated a {@link java.util.regex.Matcher})
+     * and {@code doublestar}'s 28 are 35.5-37.1%, while {@code flat} (three) and {@code backtrack} (two) stay on
+     * the scan, where their 1.8-3.8% movement is the change's noise control.
+     */
+    private static final int BUCKET_MIN_RULES = 4;
 
     private GitIgnoreFile(String relativeDirectory, List<Rule> rules) {
         this.relativeDirectory = relativeDirectory;
@@ -118,8 +143,125 @@ public final class GitIgnoreFile {
         }
         this.anchoredDepths = depths;
         this.deepestAnchoredDepth = deepest;
-        // After the index has marked its rules: the list is the immutable one the decision iterates.
+
+        // The last-segment buckets. A rule whose last segment is exactly a base name is keyed by that name; one
+        // whose last segment is `*.ext`-shaped by the tail's last-dot extension. Both are necessary conditions, not
+        // answers: the rule is still verified against the whole path, and the reverse scan above `best` still
+        // decides a later rule. The positions are ascending, so a bucket's last matching pattern is found by
+        // walking the bucket downwards.
+        int bucketable = 0;
+        for (Rule rule : rules) {
+            if (bucketKind(rule) != 0) {
+                bucketable++;
+            }
+        }
+        Map<String, int[]> bucketLiterals = Map.of();
+        Map<String, int[]> bucketSuffixes = Map.of();
+        if (bucketable >= BUCKET_MIN_RULES) {
+            Map<String, List<Integer>> literalLists = new HashMap<>();
+            Map<String, List<Integer>> suffixLists = new HashMap<>();
+            for (int index = 0; index < rules.size(); index++) {
+                Rule rule = rules.get(index);
+                int kind = bucketKind(rule);
+                if (kind == 0) {
+                    continue;
+                }
+                String tail = rule.lastSegment();
+                if (kind == 1) {
+                    literalLists.computeIfAbsent(tail, key -> new ArrayList<>()).add(index);
+                } else {
+                    String afterStar = tail.substring(1);
+                    String key = afterStar.substring(afterStar.lastIndexOf('.'));
+                    suffixLists.computeIfAbsent(key, unused -> new ArrayList<>()).add(index);
+                }
+                rules.set(index, rule.indexedCopy());
+            }
+            bucketLiterals = positions(literalLists);
+            bucketSuffixes = positions(suffixLists);
+        }
+        this.baseLiterals = bucketLiterals;
+        this.baseSuffixes = bucketSuffixes;
+        // After the indexes have marked their rules: the list is the immutable one the decision iterates.
         this.rules = List.copyOf(rules);
+    }
+
+    /**
+     * Which last-segment bucket a rule belongs in: {@code 0} for none, {@code 1} for an exact literal tail,
+     * {@code 2} for a {@code *.ext}-shaped tail.
+     *
+     * <p>Directory-only rules are never bucketed: their match can be an ancestor directory, whose base name is not
+     * the path's, so a base-name key would reject a path the rule really excludes. A plain unanchored name stays on
+     * the scan too — it is one compiled segment test and has no prefix to verify — and it is already answered by the
+     * unanchored-literal index.</p>
+     */
+    private static int bucketKind(Rule rule) {
+        if (rule.directoryOnly()) {
+            return 0;
+        }
+        if (!rule.anchored() && rule.literal() != null) {
+            return 0;
+        }
+        String tail = rule.lastSegment();
+        if (tail.isEmpty()) {
+            return 0;
+        }
+        if (isPlain(tail)) {
+            return 1;
+        }
+        if (tail.length() >= 3 && tail.charAt(0) == '*' && tail.charAt(1) == '.'
+                && isPlain(tail.substring(1))) {
+            return 2;
+        }
+        return 0;
+    }
+
+    /** Whether {@code text} holds no byte that needs the matcher: no wildcard and no escape. */
+    private static boolean isPlain(String text) {
+        return text.indexOf('*') < 0 && text.indexOf('?') < 0 && text.indexOf('[') < 0
+                && text.indexOf('\\') < 0;
+    }
+
+    /**
+     * The highest rule position in one last-segment bucket that actually matches, or {@code best} unchanged.
+     *
+     * <p>The positions are ascending, so walking them downwards finds the last matching pattern of the bucket
+     * first: the first verified position above {@code best} is that bucket's winner, and a rule that fails its
+     * whole-path verification falls through to the next position rather than to "no match". The whole-path check
+     * is what makes the bucket a candidate source rather than an answer — the last segment is necessary, not
+     * sufficient — and {@code tailRejects} rejects a wrong tail before the path is split.</p>
+     */
+    private int bucketCandidate(String path, int[] positions, int best, boolean isDirectory) {
+        String[] parts = null;
+        for (int at = positions.length - 1; at >= 0; at--) {
+            int index = positions[at];
+            if (index <= best) {
+                break;
+            }
+            Rule rule = rules.get(index);
+            if (parts == null) {
+                if (rule.tailRejects(path)) {
+                    continue;
+                }
+                parts = path.split("/", -1);
+            }
+            if (rule.matches(path, parts, isDirectory)) {
+                return index;
+            }
+        }
+        return best;
+    }
+
+    /** A {@code List<Integer>} map as the immutable {@code int[]} positions the decision walks. */
+    private static Map<String, int[]> positions(Map<String, List<Integer>> lists) {
+        Map<String, int[]> converted = new HashMap<>(lists.size());
+        for (Map.Entry<String, List<Integer>> entry : lists.entrySet()) {
+            int[] positions = new int[entry.getValue().size()];
+            for (int index = 0; index < positions.length; index++) {
+                positions[index] = entry.getValue().get(index);
+            }
+            converted.put(entry.getKey(), positions);
+        }
+        return converted;
     }
 
     /**
@@ -254,6 +396,24 @@ public final class GitIgnoreFile {
                 start = slash + 1;
             }
         }
+        // The last-segment buckets are candidate sources, not answers: the last segment is necessary, the whole rule
+        // is still verified, and the reverse scan below starts above `best`, so a later rule always overrides a
+        // bucket hit exactly as it overrides an indexed literal.
+        if (!baseLiterals.isEmpty() || !baseSuffixes.isEmpty()) {
+            int slash = scoped.lastIndexOf('/');
+            String base = slash < 0 ? scoped : scoped.substring(slash + 1);
+            int[] literalPositions = baseLiterals.get(base);
+            if (literalPositions != null) {
+                best = bucketCandidate(scoped, literalPositions, best, isDirectory);
+            }
+            int dot = base.lastIndexOf('.');
+            if (dot >= 0) {
+                int[] suffixPositions = baseSuffixes.get(base.substring(dot));
+                if (suffixPositions != null) {
+                    best = bucketCandidate(scoped, suffixPositions, best, isDirectory);
+                }
+            }
+        }
         // One split per decision, and only once a rule's last segment has accepted the raw path: on `backtrack`
         // both DP rules end `*.class` / `*.g4` against `.java` paths, so the split that used to run before the
         // precheck is never paid. A directory-only rule is the exception — its ancestor-prefix branch asks about a
@@ -291,11 +451,11 @@ public final class GitIgnoreFile {
 
     /** One pattern: its polarity, whether it is directory-only, and its compiled form. */
     private record Rule(boolean negated, boolean directoryOnly, boolean anchored, String literal, boolean indexed,
-            Glob.Segment[] segments) {
+            String lastSegment, Glob.Segment[] segments) {
 
-        /** The same rule, marked as answered by the file's literal index rather than scanned. */
+        /** The same rule, marked as answered by one of the file's indexes rather than scanned. */
         Rule indexedCopy() {
-            return new Rule(negated, directoryOnly, anchored, literal, true, segments);
+            return new Rule(negated, directoryOnly, anchored, literal, true, lastSegment, segments);
         }
 
         /**
@@ -330,8 +490,10 @@ public final class GitIgnoreFile {
             boolean plain = line.indexOf('*') < 0 && line.indexOf('?') < 0 && line.indexOf('[') < 0
                     && line.indexOf('\\') < 0;
             // The path is matched by the segment DP; only the per-segment regexes are compiled here, which is also
-            // where character classes and escapes are understood.
+            // where character classes and escapes are understood. The raw last segment is kept for the last-segment
+            // buckets, which need the string (a literal tail, or the `*.ext` shape to key by).
             return new Rule(negated, directoryOnly, anchored, plain ? line : null, false,
+                    line.substring(line.lastIndexOf('/') + 1),
                     Glob.compile(line, anchored, segment -> translate(segment)));
         }
 

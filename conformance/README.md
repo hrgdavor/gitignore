@@ -53,6 +53,19 @@ D:\wrk\zig\17\zig.exe build test -Dvectors=.tmp/corpus.json --cache-dir .zig-cac
 
 A `.tmp/` file is ignored and disposable; nothing generated from a checkout is committed.
 
+## Ordering vectors
+
+[`ordering-vectors.json`](ordering-vectors.json) is a second document in the same schema, kept separate so the
+34-case matcher contract keeps its count and its provenance. It pins one property of the decision order: a
+last-segment bucket — the index that answers a rule by its literal last segment or its `*.ext` tail — is a candidate
+source, never an answer. A later matching rule still wins, a later bucket rule still beats an earlier one, and a
+bucket candidate that fails its whole-path check falls through to the next position instead of to "no match". The
+deciding rule line of every case was checked with `git check-ignore -v --no-index` (git 2.54) before it was written.
+
+Both documents are run by each port's own suite: `src/conformance_test.zig` embeds `ordering.json` next to
+`vectors.json`, `js/vectors.test.mjs` runs both as Bun tests, and `java/run.mjs` passes both files to the same
+`Runner`. A case added here needs the same `git check-ignore` check as one added to `gitignore-vectors.json`.
+
 ## How a port runs them
 
 The runner is deliberately language-neutral:

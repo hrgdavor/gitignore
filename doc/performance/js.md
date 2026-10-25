@@ -193,3 +193,37 @@ to JS.
 **What is left, measured on the same harness:** `path.split('/')` is 2.19 µs per decision on `backtrack` (4.4 ms/round),
 and it runs *before* the DP's last-segment precheck, which then rejects both DP rules at the tail. Splitting only after a
 tail precheck is the next lever, and it is bigger than anything else left in this port.
+
+
+## "Last-segment buckets (doublestar −33 to −35%)"
+
+**Measured effect.** Paired alternating A/B, 9 fresh processes per side per workload, `--rounds 12`, min of 9, one
+shared start-up floor (23.22 → 22.52 ms cold start), verdicts byte-identical on all six workloads. Session 1
+(working tree first), processing ms:
+
+| workload   | before | after | delta      | before ns/dec | after ns/dec | bucket built |
+| ---------- | -----: | ----: | ---------: | ------------: | -----------: | ------------ |
+| flat       | 5.92   | 5.53  | −6.7%      | 493           | 461          | no (3)       |
+| deep       | 10.62  | 9.41  | −11.4%     | 443           | 392          | yes (5)      |
+| doublestar | 24.71  | 16.15 | **−34.6%** | 1029          | 673          | yes (28)     |
+| anchored   | 7.26   | 7.44  | +2.4%      | 303           | 310          | no (0)       |
+| dirs       | 4.85   | 5.62  | +15.8%     | 404           | 468          | no (0)       |
+| backtrack  | 9.42   | 9.02  | −4.3%      | 393           | 376          | no (2)       |
+| total      | 62.79  | 53.16 | −15.3%     |               |              |              |
+
+Session 2, reversed port order: `doublestar` 25.04 → 16.70 ms (**−33.3%**), total 63.66 → 56.03 (−12.0%); the four
+workloads with no bucket moved −14.3% … +20.2%, which is the noise floor and includes `backtrack` −14.3% on a rule
+set where the bucket cannot be built at all. `deep` (−11.4% / −1.7%) is below the ~13% floor: **not evidence**.
+`doublestar` clears it in both sessions and in the same direction, so the bucket stays; `BUCKET_MIN_RULES = 4`
+(measured line: `deep`'s five build, `flat`'s three do not).
+
+**Why `doublestar` and not `deep`.** `doublestar` has 28 bucket rules (five `*.ext` suffixes, eleven `**/*.ext`
+DP rules, twelve `**/name`/`/target` literals), and before the bucket every decision tested most of them: a
+`RegExp.test` for each DP rule's tail and an `endsWith` for each suffix/literal. The bucket reduces that to two map
+lookups and, on a hit, one whole-path verification. The tail checks that `deep` removes were already one cheap
+`RegExp.test` each, so five of them do not pay for two map lookups.
+
+**Risk.** As shared.md. Nothing to revert: the only workloads with the bucket built improved or stayed inside noise,
+and the no-bucket workloads are unchanged code paths. **Left:** the dir-only-negation divergence above, pre-existing.
+
+---

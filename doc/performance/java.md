@@ -215,3 +215,32 @@ measured before anything changed. The per-decision costs, the A/B tables and the
 `anchored`**. A manual split or a `count` computed without an array would attack it directly. And `decide` splits the path
 *before* `Glob.matches` runs its last-segment precheck, so on `backtrack` the split is spent on two DP rules the precheck
 rejects. Both are bigger than the four residuals this session measured.
+
+
+## "Last-segment buckets (deep −42/−46%, doublestar −36/−37%)"
+
+**Measured effect.** Same protocol (shared start-up floor 50.61 → 50.52 ms), session 1:
+
+| workload   | before | after  | delta      | before ns/dec | after ns/dec | bucket built |
+| ---------- | -----: | -----: | ---------: | ------------: | -----------: | ------------ |
+| flat       | 18.50  | 19.90  | +7.6%      | 1541          | 1659         | no (3)       |
+| deep       | 35.87  | 20.99  | **−41.5%** | 1495          | 875          | yes (5)      |
+| doublestar | 73.82  | 46.42  | **−37.1%** | 3076          | 1934         | yes (28)     |
+| anchored   | 19.17  | 19.00  | −0.9%      | 799           | 792          | no (0)       |
+| dirs       | 10.05  | 11.64  | +15.8%     | 837           | 970          | no (0)       |
+| backtrack  | 33.50  | 34.09  | +1.8%      | 1396          | 1420         | no (2)       |
+| total      | 190.91 | 152.03 | **−20.4%** |               |              |              |
+
+Session 2: `deep` 37.50 → 20.22 (**−46.1%**), `doublestar` 72.81 → 46.98 (**−35.5%**), total 193.59 → 151.01
+(−22.0%); the workloads without the bucket moved −5.0% … +3.8%.
+
+**Why Java gains more.** Its last-segment precheck is `tail.regex().matcher(last).matches()` — a fresh `Matcher` per
+rule reached — so `deep`'s five `*.ext`/literal checks (four of them regex) lost four allocations per decision, and
+`doublestar`'s 28 lost nearly all of its tail prechecks. `BUCKET_MIN_RULES = 4` keeps `flat` (3) and `backtrack`
+(2) on the scan, where their movement (+7.6%, +1.8%) is the noise control; raising it further would only move
+`deep`'s five off the bucket, and that is where half the measured total came from.
+
+**Risk.** As shared.md; the bucket is built once per file, and `Rule.indexedCopy()` keeps it out of the scan, so the
+extra per-run cost is parse-time and is inside the start-up column. **Left:** the dir-only-negation divergence above.
+
+---

@@ -34,13 +34,14 @@ fn verdictName(verdict: ?bool) []const u8 {
     return "no-opinion";
 }
 
-test "every conformance vector answers as it expects" {
+/// Runs every case of one vectors document through the chain and fails if any disagrees.
+///
+/// `label` only names the document in the failure output; the case's own `name` still identifies it. Both
+/// documents are embedded through the build: `build.zig` registers `vectors.json` (and `-Dvectors=<file>` swaps
+/// it) and `ordering.json`, so a test carries its own input and cannot be run against a stale file on disk. It
+/// also means the files work from any checkout, which a runtime path never did.
+fn runVectors(label: []const u8, bytes: []const u8) !void {
     const io = testing.io;
-
-    // Embedded through the build: `build.zig` registers the vectors as the anonymous import "vectors.json" (and
-    // `-Dvectors=<file>` swaps it), so the test carries its own input and cannot be run against a stale file on
-    // disk. It also means the file works from any checkout, which a runtime path never did.
-    const bytes = @embedFile("vectors.json");
 
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bytes, .{});
     defer parsed.deinit();
@@ -87,15 +88,26 @@ test "every conformance vector answers as it expects" {
             // Printed before the final assert so a disagreement names its vector even though only one
             // failure is reported at the end.
             std.debug.print(
-                "conformance case {d} '{s}' (path '{s}', isDir={}): expected {s}, got {s}\n",
-                .{ case_index, name, path, is_dir, expect, got },
+                "{s} case {d} '{s}' (path '{s}', isDir={}): expected {s}, got {s}\n",
+                .{ label, case_index, name, path, is_dir, expect, got },
             );
             failures += 1;
         }
     }
 
     if (failures > 0) {
-        std.debug.print("conformance: {d} of {d} vectors failed\n", .{ failures, cases.len });
+        std.debug.print("{s}: {d} of {d} vectors failed\n", .{ label, failures, cases.len });
     }
     try testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "every conformance vector answers as it expects" {
+    try runVectors("conformance", @embedFile("vectors.json"));
+}
+
+test "every ordering vector answers as it expects" {
+    // The last-segment bucket cases: git's last-matching-pattern order against the bucket's candidate classes.
+    // Separate from `vectors.json` because those 34 cases are the matcher contract and these pin the decision
+    // order the bucket must not change.
+    try runVectors("ordering", @embedFile("ordering.json"));
 }

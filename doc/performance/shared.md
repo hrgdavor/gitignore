@@ -337,3 +337,58 @@ test` 34.
 **2.5 µs per decision on `backtrack` = 5.0 ms/round (43% of 11.6), 1.99 ms deep, 1.15 doublestar, 1.08 anchored** (JS:
 2.19 µs, 4.4 ms/round on backtrack). And both ports split the path *before* the DP's last-segment precheck runs, so on
 `backtrack` every split is spent on two DP rules that the precheck then rejects. Neither was in this session's brief.
+
+
+## "Last-segment buckets: candidate sources, never answers"
+
+**The split.** The decision loop classifies every rule once, at parse/build time, by its **last segment**:
+directory-only rules and plain unanchored names stay on the scanned path; a rule whose last segment is a literal
+(`build.gradle`, `src/**/target`, `/target`) or exactly `*.ext`-shaped (`*.class`, `**/*.class`, `*.class.txt`) is
+moved into a position map and removed from the scan. A rule's last segment is a **necessary** condition for a
+non-directory-only match, so a path whose base name/last-dot extension does not appear in a bucket cannot match one
+of its rules — one hash lookup replaces a scan over every such rule. Directory-only rules are never bucketed: their
+match can be an ancestor directory whose base name is not the path's.
+
+**The change.** `Chain.base_literals` / `Chain.base_suffixes` (Zig) and `baseLiterals` / `baseSuffixes` (JS, Java)
+map the key to every rule position with that tail, ascending. A decision asks the base name in the literal bucket and
+the base's last-dot extension in the suffix bucket, then walks the positions **from the best end downwards**, verifies
+each candidate against the whole path, and keeps the first that matches. Suffix keys are the tail's own last-dot
+extension, so `*.class.txt` and `*.txt` share the `.txt` bucket; a candidate that fails whole-path verification falls
+through to the next position, not to "no match". The keys are superset filters; the rule is always re-verified.
+
+**Ordering, the invariant this must not break.** `best` is the best (highest-precedence) position any indexed source
+could reach for this path. The general scan then only considers rules after it: JS/Java walk rule indices downwards
+while `index > best` and return the first match; Zig's chain positions ascend in precedence order, so its lists are
+walked while `at < best`. Because the bucket has already supplied the best *matching* bucketed position, no indexed
+rule after `best` can exist; every general rule after `best` still wins — that is git's last-matching-pattern rule,
+including a later negation and a later bucket rule in another bucket. `conformance/ordering-vectors.json` (11 cases,
+each verified with `git check-ignore -v --no-index` under git 2.54) pins exactly this; the pre-existing 34-case
+`gitignore-vectors.json` is untouched.
+
+**Thresholds differ per port, and that is measured, not guessed:**
+- Zig `bucket_min_rules = 2` (chain-wide): `backtrack`'s two bucket rules are the win here (26.5% / 31.2% in two
+  sessions) because its tail check entered the `**` matcher; `doublestar`'s seventeen are a wash (its suffix scan is
+  already a bare `endsWith` list).
+- JS `BUCKET_MIN_RULES = 4` (per file): `doublestar`'s 28 bucket rules pay (33-35%); `deep`'s five are below the
+  floor; `flat` (3) and `backtrack` (2) stay scanned and act as noise controls.
+- Java `BUCKET_MIN_RULES = 4` (per file): `deep`'s five and `doublestar`'s 28 both pay hugely (41-46%, 36-37%)
+  because each `*.ext` tail rejection allocated a `Matcher`; the same two rule sets are below the JS/Zig line.
+
+**Risk.** The bucket changes which questions are asked, never the answer, and that is what the ordering vectors, the
+git-verified fuzz (1,286 decisions over 400 random multi-file stacks) and 12,000 in-process differential decisions
+(library + dirs) are for. The residual risks are (a) a rule class that is necessary-but-not-sufficient in a way the
+last segment does not capture — none is known: `**` tails, escapes, character classes and multi-wildcard tails are
+left on the scan; (b) thresholds: a rule set between the measured points gets a bucket that was not measured to pay,
+which costs a hash lookup or two and showed no regression above noise in either session; (c) the buckets are built
+per chain/file at parse time, so a pathological rule set with thousands of same-tail rules pays an extra list build.
+
+**What is left.** The git oracle found a pre-existing divergence that this change does not touch and this session did
+not fix: JS and Java apply a **directory-only negation** (`!out/`) to a path *below* `out`, because their per-file
+decision still matches a directory-only rule against ancestor prefixes in both polarities; git re-includes the
+directory only. Zig agrees with git (its unanchored directory-only index is consulted only when `is_dir`). Three of
+the 1,286 fuzz cases are exactly this, identical in the pre-change builds. Fixing it means deleting that ancestor
+branch and leaving descendant exclusion to `GitIgnoreRules` / `Stack.dirState` pruning (which already implements the
+positive case); it changes public matcher answers, so it wants its own vectors and its own measurement, not a ride on
+this change.
+
+---

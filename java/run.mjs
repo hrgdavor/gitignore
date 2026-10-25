@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-// The Java port's gate: compile it with the JDK, run it against the conformance vectors, and forward the exit code.
+// The Java port's gate: compile it with the JDK, run it against the conformance vectors and the ordering vectors, and
+// forward the exit code.
 //
 //   bun java/run.mjs
 //
@@ -46,5 +47,17 @@ if (!existsSync(vectors)) {
   console.error(`missing vectors: ${vectors}`);
   process.exit(1);
 }
-const run = spawnSync(java, ['-cp', out, 'hr.hrg.gitignore.Runner', vectors], { stdio: 'inherit' });
-process.exit(run.status ?? 1);
+// Two documents, one runner: `ordering-vectors.json` has the same schema and pins git's last-matching-pattern order
+// against the last-segment buckets' candidate classes. Both must agree for the gate to pass.
+const documents = [vectors, join(root, 'conformance', 'ordering-vectors.json')];
+let status = 0;
+for (const document of documents) {
+  if (!existsSync(document)) {
+    console.error(`missing vectors: ${document}`);
+    process.exit(1);
+  }
+  console.log(`\n== ${document} ==`);
+  const run = spawnSync(java, ['-cp', out, 'hr.hrg.gitignore.Runner', document], { stdio: 'inherit' });
+  if (run.status !== 0) status = run.status ?? 1;
+}
+process.exit(status);
