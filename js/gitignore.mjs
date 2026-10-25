@@ -345,41 +345,26 @@ export function parseGitignore(relativeDirectory, text) {
       // Ask the index first. `best` is the highest rule position any indexed rule can reach for this path, so
       // only rules after it can override the answer — usually none. That is also why a hit needs no split:
       // a path the index decides is answered before the matcher is reached.
+      //
+      // An unanchored directory-only rule names one directory, so it is a question about a directory's own base
+      // name, never about an interior segment of a path below it: a matching ancestor is `#stateFor`'s inherited
+      // fact. Testing interior segments here made a later `!out/` re-include `out/x` — git excludes it from `out/`
+      // or decides the file by its own name.
       let best = -1;
-      if (unanchoredNames.length > 0 && unanchoredNames.length < 4) {
-        // Few names: one whole-path indexOf per name beats a map get per segment, and builds no substring. The
-        // threshold is measured: backtrack 4960 -> 245 ns/decision and deep 1204 -> 169, while flat (4 names) goes
-        // 114 -> 181 and dirs (40 names) 133 -> 1937, so the scan is used only below it.
+      if (isDirectory && unanchoredNames.length > 0 && unanchoredNames.length < 4) {
+        // Few names: a direct base-name comparison beats a map get and builds no substring. The threshold is
+        // measured: backtrack 4960 -> 245 ns/decision and deep 1204 -> 169, while flat (4 names) goes 114 -> 181
+        // and dirs (40 names) 133 -> 1937, so the scan is used only below it.
         for (let at = 0; at < unanchoredNames.length; at += 1) {
-          const literal = unanchoredNames[at];
-          let from = 0;
-          for (;;) {
-            const found = scoped.indexOf(literal, from);
-            if (found < 0) break;
-            const end = found + literal.length;
-            if ((found === 0 || scoped[found - 1] === '/') && (end === scoped.length || scoped[end] === '/')
-              && (end !== scoped.length || isDirectory) && unanchoredRules[at] > best) {
-              best = unanchoredRules[at];
-            }
-            from = found + 1;
+          if (unanchoredRules[at] > best && endsWithSegment(scoped, unanchoredNames[at])) {
+            best = unanchoredRules[at];
           }
         }
       }
-      if (unanchoredNames.length >= 4) {
-        // An unanchored directory rule names one segment, and for a file the last segment is the file itself.
-        let start = 0;
-        for (;;) {
-          const slash = scoped.indexOf('/', start);
-          const last = slash < 0;
-          if (!last || isDirectory) {
-            const name = last ? scoped.slice(start) : scoped.slice(start, slash);
-            const at = unanchoredLiterals.get(name);
-            if (at !== undefined && at > best) {
-              best = at;
-            }
-          }
-          if (last) break;
-          start = slash + 1;
+      if (isDirectory && unanchoredNames.length >= 4) {
+        const at = unanchoredLiterals.get(lastSegmentOf(scoped));
+        if (at !== undefined) {
+          best = at;
         }
       }
       if (deepestAnchoredDepth > 0) {
@@ -551,6 +536,13 @@ function matches(rule, path, isDirectory, segments, tail) {
       }
       return rule.pattern.test(path);
     }
+    if (!rule.anchored) {
+      // An unanchored `pat/` names a directory at any level below its file, so only the path's own base name can
+      // be tested here; a matching ancestor is the directory state's inherited fact, not this rule's answer for
+      // the path below it. Git's own file decision asks only the final component, which is why `!out/` after
+      // `*.log` must not re-include `out/x`.
+      return isDirectory && matchesName(rule, lastSegmentOf(path));
+    }
     if (isDirectory && rule.pattern.test(path)) {
       return true;
     }
@@ -567,6 +559,9 @@ function matches(rule, path, isDirectory, segments, tail) {
   if (!rule.directoryOnly) {
     return segmentsMatch(rule.segments, segments);
   }
+  if (!rule.anchored) {
+    return isDirectory && matchesName(rule, segments[segments.length - 1]);
+  }
   if (isDirectory && segmentsMatch(rule.segments, segments)) {
     return true;
   }
@@ -578,6 +573,22 @@ function matches(rule, path, isDirectory, segments, tail) {
     }
   }
   return false;
+}
+
+/**
+ * Whether an unanchored directory-only rule names this one directory segment.
+ *
+ * The rule's pattern has no separator (a separator makes it anchored), so its last segment is the whole name and
+ * `lastLiteral` / `lastPattern` answer without a split or a whole-path regex. A lone `**` names every directory.
+ */
+function matchesName(rule, name) {
+  if (rule.lastLiteral !== null) {
+    return rule.lastLiteral === name;
+  }
+  if (rule.lastPattern !== null) {
+    return rule.lastPattern.test(name);
+  }
+  return true;
 }
 
 /**

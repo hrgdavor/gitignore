@@ -66,6 +66,29 @@ Both documents are run by each port's own suite: `src/conformance_test.zig` embe
 `vectors.json`, `js/vectors.test.mjs` runs both as Bun tests, and `java/run.mjs` passes both files to the same
 `Runner`. A case added here needs the same `git check-ignore` check as one added to `gitignore-vectors.json`.
 
+## Ancestor vectors
+
+[`ancestor-vectors.json`](ancestor-vectors.json) is a third document in the same schema, and a sibling of
+`ordering-vectors.json` rather than part of it: that file's stated property is the decision order of the
+last-segment buckets, while these cases pin the *scope* of a directory-only rule and the walk. A
+directory-only pattern is a fact about a directory, so it never matches a file below that directory by name
+(an excluded ancestor is what excludes the file, and a negation inside an excluded directory cannot re-open
+anything) — but the same negation still re-includes inside a directory that is not itself excluded.
+
+Every case carries the oracle's answer beside the expectation: `git` is what
+`git check-ignore -q --no-index` said (`exclude` or `not-ignored`) and `gitRule` is the line
+`git check-ignore -v -n --no-index` named (`null` when git named none and printed its empty `::path` line).
+`expect` is the three-valued answer the Zig reference, the JS port and the Java port all give. The cases were
+found by a randomized differential oracle and then reduced by hand; each was re-run against git 2.54 before it
+was written, and the file is generated from the recorded oracle matrix rather than typed.
+
+`js/conformance.mjs`, `js/vectors.test.mjs` and `java/run.mjs` run all three documents. The Zig suite embeds the
+first two; this document is verified without changing `src/` by swapping it in as the conformance corpus:
+
+```text
+D:\wrk\zig\17\zig.exe build test --cache-dir .zig-cache\ancestor -Dvectors=conformance/ancestor-vectors.json
+```
+
 ## How a port runs them
 
 The runner is deliberately language-neutral:

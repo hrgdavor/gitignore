@@ -329,46 +329,26 @@ public final class GitIgnoreFile {
         }
         // Ask the index first. `best` is the highest rule position any indexed rule can reach for this path, so only
         // rules after it can override the answer — usually none, and then the path is answered without a split.
+        //
+        // An unanchored directory-only rule names one directory, so it is a question about a directory's own base
+        // name, never about an interior segment of a path below it: a matching ancestor is `GitIgnoreRules`' inherited
+        // directory state. Testing interior segments here made a later `!out/` re-include `out/x`; git excludes it
+        // through `out/`, or decides the file by its own name.
         int best = -1;
-        if (unanchoredNames.length > 0 && unanchoredNames.length < UNANCHORED_INDEX_MIN) {
-            // Few names: one whole-path indexOf per name beats a map get per segment, and builds no substring. The
-            // threshold is measured: backtrack 1661 -> 294 ns/decision and deep 612 -> 273, while flat (4 names)
-            // goes 266 -> 338 and dirs (40 names) 293 -> 714, so the scan is used only below it.
+        if (isDirectory && unanchoredNames.length > 0 && unanchoredNames.length < UNANCHORED_INDEX_MIN) {
+            // Few names: a direct base-name comparison beats a map get and builds no substring. The threshold is
+            // measured: backtrack 1661 -> 294 ns/decision and deep 612 -> 273, while flat (4 names) goes 266 -> 338
+            // and dirs (40 names) 293 -> 714, so the scan is used only below it.
             for (int at = 0; at < unanchoredNames.length; at++) {
-                String literal = unanchoredNames[at];
-                int from = 0;
-                while (true) {
-                    int found = scoped.indexOf(literal, from);
-                    if (found < 0) {
-                        break;
-                    }
-                    boolean before = found == 0 || scoped.charAt(found - 1) == '/';
-                    int end = found + literal.length();
-                    boolean after = end == scoped.length() || scoped.charAt(end) == '/';
-                    if (before && after && (end != scoped.length() || isDirectory) && unanchoredRules[at] > best) {
-                        best = unanchoredRules[at];
-                    }
-                    from = found + 1;
+                if (unanchoredRules[at] > best && endsWithSegment(scoped, unanchoredNames[at])) {
+                    best = unanchoredRules[at];
                 }
             }
         }
-        if (unanchoredNames.length >= UNANCHORED_INDEX_MIN) {
-            // An unanchored directory rule names one segment, and for a file the last segment is the file itself.
-            int start = 0;
-            while (true) {
-                int slash = scoped.indexOf('/', start);
-                boolean last = slash < 0;
-                if (!last || isDirectory) {
-                    String name = last ? scoped.substring(start) : scoped.substring(start, slash);
-                    Integer at = unanchoredLiterals.get(name);
-                    if (at != null && at > best) {
-                        best = at;
-                    }
-                }
-                if (last) {
-                    break;
-                }
-                start = slash + 1;
+        if (isDirectory && unanchoredNames.length >= UNANCHORED_INDEX_MIN) {
+            Integer at = unanchoredLiterals.get(lastSegmentOf(scoped));
+            if (at != null) {
+                best = at;
             }
         }
         if (deepestAnchoredDepth > 0) {
@@ -449,6 +429,21 @@ public final class GitIgnoreFile {
         return relativePath.startsWith(prefix) ? relativePath.substring(prefix.length()) : null;
     }
 
+    /** The last {@code /}-separated segment of a path, without a split. */
+    private static String lastSegmentOf(String path) {
+        int slash = path.lastIndexOf('/');
+        return slash < 0 ? path : path.substring(slash + 1);
+    }
+
+    /** Whether {@code path}'s last {@code /}-separated segment is exactly {@code literal}, without a split. */
+    private static boolean endsWithSegment(String path, String literal) {
+        int start = path.length() - literal.length();
+        if (start < 0 || (start > 0 && path.charAt(start - 1) != '/')) {
+            return false;
+        }
+        return path.endsWith(literal);
+    }
+
     /** One pattern: its polarity, whether it is directory-only, and its compiled form. */
     private record Rule(boolean negated, boolean directoryOnly, boolean anchored, String literal, boolean indexed,
             String lastSegment, Glob.Segment[] segments) {
@@ -527,18 +522,42 @@ public final class GitIgnoreFile {
             if (!directoryOnly) {
                 return Glob.matches(this.segments, segments, -1);
             }
+            if (!anchored) {
+                // An unanchored `pat/` names a directory at any level below its file, so only the path's own base name
+                // can be tested here; a matching ancestor is the directory state's inherited fact, not this rule's
+                // answer for the path below it. Git's own file decision asks only the final component, which is why
+                // `!out/` after `*.log` must not re-include `out/x`.
+                return isDirectory && matchesName(segments[segments.length - 1]);
+            }
             if (isDirectory && Glob.matches(this.segments, segments, -1)) {
                 return true;
             }
-            // git reports a file inside an ignored directory as ignored too, so a directory-only pattern matches any
-            // ancestor of the path. The walk prunes before it gets here, and a caller that tests a path on its own gets
-            // the same answer. A segment count is enough: no substring is built per ancestor.
+            // An anchored directory-only pattern is a whole prefix directory, so a file below it is its match; the
+            // walk prunes, and a caller that tests a path on its own gets git's answer either way. A segment count is
+            // enough: no substring is built per ancestor.
             for (int count = segments.length - 1; count >= 1; count--) {
                 if (Glob.matches(this.segments, segments, count)) {
                     return true;
                 }
             }
             return false;
+        }
+
+        /**
+         * Whether an unanchored directory-only rule names this one directory segment.
+         *
+         * <p>The rule's pattern has no separator (a separator makes it anchored), so its last compiled segment is the
+         * whole name; a lone {@code **} names every directory.</p>
+         */
+        boolean matchesName(String name) {
+            Glob.Segment tail = segments[segments.length - 1];
+            if (tail.doubleStar()) {
+                return true;
+            }
+            if (tail.literal() != null) {
+                return tail.literal().equals(name);
+            }
+            return tail.regex().matcher(name).matches();
         }
 
         /** Trailing spaces are ignored unless they are escaped with a backslash. */

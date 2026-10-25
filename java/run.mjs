@@ -47,9 +47,14 @@ if (!existsSync(vectors)) {
   console.error(`missing vectors: ${vectors}`);
   process.exit(1);
 }
-// Two documents, one runner: `ordering-vectors.json` has the same schema and pins git's last-matching-pattern order
-// against the last-segment buckets' candidate classes. Both must agree for the gate to pass.
-const documents = [vectors, join(root, 'conformance', 'ordering-vectors.json')];
+// Three documents, one runner: `ordering-vectors.json` has the same schema and pins git's last-matching-pattern order
+// against the last-segment buckets' candidate classes, and `ancestor-vectors.json` pins the scope of a directory-only
+// rule and the excluded-ancestor rule. All three must agree for the gate to pass.
+const documents = [
+  vectors,
+  join(root, 'conformance', 'ordering-vectors.json'),
+  join(root, 'conformance', 'ancestor-vectors.json'),
+];
 let status = 0;
 for (const document of documents) {
   if (!existsSync(document)) {

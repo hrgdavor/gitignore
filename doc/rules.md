@@ -52,12 +52,14 @@ segment at any depth. A leading `/` is dropped, and a leading `**/` is stripped 
 
 ## Directory-only
 
-A trailing `/` means **directories only**. A file *inside* such a directory also answers "excluded", which is
-what makes pruning a directory equivalent to ignoring the whole subtree.
+A trailing `/` means **directories only**. The rule matches a directory by its own name; a file *below* that
+directory is decided by its own patterns, and an excluded ancestor is what excludes the subtree — which is what
+makes pruning a directory equivalent to ignoring the whole subtree.
 
 | Pattern form                     | What it does                                                | Vectors                                                     | Test                                                                                      |
 | -------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | `name/`                          | Matches a directory called `name`, not a file of that name. | `trailing slash matches a directory`, `trailing slash does not match a file`, `a directory rule applies to the directory itself only` | [`a trailing slash matches directories only`](../src/gitignore.zig#L618) |
+| `name/` and a file below it      | The rule is a question about a directory's own base name, so it never decides a file below that directory by the file's name. A `!name/` re-includes the directory itself, never a file inside it — that file is decided by its own patterns. | `a dir-only negation does not match a file below it`, `a dir-only negation does re-include the directory it names` | [the ancestor vectors](../conformance/ancestor-vectors.json) |
 | `name/` and an excluded ancestor | An excluded directory is **not entered**, so everything below it is excluded by the ancestor rather than by a match of its own. A `!` below it never gets a chance to re-include anything. | `a negation cannot re-include inside an excluded directory` | [`a negated child inside an excluded directory stays ignored`](../src/gitignore.zig#L644) |
 
 ## The three `**` forms

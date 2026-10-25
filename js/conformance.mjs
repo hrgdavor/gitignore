@@ -8,43 +8,56 @@
 // state as behaviour. The three-valued result is mapped to include / exclude / no-opinion, and a mismatch prints the
 // case name, the path and both answers.
 //
+// Three documents, one runner: `gitignore-vectors.json` is the matcher contract, `ordering-vectors.json` pins git's
+// last-matching-pattern order against the last-segment buckets, and `ancestor-vectors.json` pins the scope of a
+// directory-only rule and the excluded-ancestor rule. All three must agree.
+//
 // Exit code 1 when anything disagrees, so this is a gate and not a report.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import { parseGitignore, GitIgnoreRules } from './gitignore.mjs';
 
-const vectors = JSON.parse(readFileSync(new URL('../conformance/gitignore-vectors.json', import.meta.url), 'utf8'));
+const documents = [
+  ['conformance', 'gitignore-vectors.json'],
+  ['ordering', 'ordering-vectors.json'],
+  ['ancestor', 'ancestor-vectors.json'],
+];
 
-const results = [];
-for (const testCase of vectors.cases) {
-  const root = mkdtempSync(join(tmpdir(), 'gitignore-'));
-  try {
-    // The shallowest rule file first: GitIgnoreRules walks its stack from the top, so the deepest file answers first.
-    const files = [...testCase.ruleFiles].sort((left, right) => left.dir.split('/').length - right.dir.split('/').length);
-    const rules = new GitIgnoreRules();
-    for (const file of files) {
-      if (file.dir !== '') mkdirSync(join(root, file.dir), { recursive: true });
-      writeFileSync(join(root, file.dir, '.gitignore'), file.rules);
-      rules.push(parseGitignore(file.dir, file.rules));
+let failed = 0;
+for (const [label, name] of documents) {
+  const vectors = JSON.parse(readFileSync(new URL(`../conformance/${name}`, import.meta.url), 'utf8'));
+  const results = [];
+  for (const testCase of vectors.cases) {
+    const root = mkdtempSync(join(tmpdir(), 'gitignore-'));
+    try {
+      // The shallowest rule file first: GitIgnoreRules walks its stack from the top, so the deepest file answers first.
+      const files = [...testCase.ruleFiles].sort((left, right) => left.dir.split('/').length - right.dir.split('/').length);
+      const rules = new GitIgnoreRules();
+      for (const file of files) {
+        if (file.dir !== '') mkdirSync(join(root, file.dir), { recursive: true });
+        writeFileSync(join(root, file.dir, '.gitignore'), file.rules);
+        rules.push(parseGitignore(file.dir, file.rules));
+      }
+
+      const decision = rules.decide(testCase.path, testCase.isDir);
+      const observed = decision === true ? 'exclude' : decision === false ? 'include' : 'no-opinion';
+      results.push({ name: testCase.name, path: testCase.path, expect: testCase.expect, observed, pass: observed === testCase.expect });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-
-    const decision = rules.decide(testCase.path, testCase.isDir);
-    const observed = decision === true ? 'exclude' : decision === false ? 'include' : 'no-opinion';
-    results.push({ name: testCase.name, path: testCase.path, expect: testCase.expect, observed, pass: observed === testCase.expect });
-  } finally {
-    rmSync(root, { recursive: true, force: true });
   }
-}
 
-console.log(`\n## JS port vs ${vectors.cases.length} conformance vectors\n`);
-console.log('| case | expected | observed | |');
-console.log('| ---- | -------- | -------- |-|');
-for (const row of results) {
-  console.log(`| ${row.name} | ${row.expect} | ${row.observed} | ${row.pass ? 'pass' : '**fail**'} |`);
-}
+  console.log(`\n## JS port vs ${vectors.cases.length} ${label} vectors\n`);
+  console.log('| case | expected | observed | |');
+  console.log('| ---- | -------- | -------- |-|');
+  for (const row of results) {
+    console.log(`| ${row.name} | ${row.expect} | ${row.observed} | ${row.pass ? 'pass' : '**fail**'} |`);
+  }
 
-const passed = results.filter((row) => row.pass).length;
-console.log(`\n${passed}/${results.length} cases agree`);
-if (passed !== results.length) process.exit(1);
+  const passed = results.filter((row) => row.pass).length;
+  console.log(`\n${passed}/${results.length} cases agree`);
+  failed += results.length - passed;
+}
+if (failed !== 0) process.exit(1);

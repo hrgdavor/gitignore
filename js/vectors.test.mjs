@@ -17,6 +17,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const documents = [
   ['the conformance vectors', 'gitignore-vectors.json'],
   ['the ordering vectors', 'ordering-vectors.json'],
+  ['the ancestor vectors', 'ancestor-vectors.json'],
 ];
 
 /** The three-value answer of one case, through a fresh stack of its rule files. */
