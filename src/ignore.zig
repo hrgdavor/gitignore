@@ -23,6 +23,33 @@ const gitignore = @import("gitignore.zig");
 const SuffixEntry = struct { suffix: []const u8, at: usize };
 const RuleEntry = struct { rule: gitignore.Rule, at: usize };
 
+/// The directory cache's key equality. A path list repeats the same directory string for a whole run, and on
+/// this toolchain `std.mem.eql` costs ~550 ns for a 207-byte key where this word-at-a-time XOR costs ~32 ns
+/// (measured: `backtrack`'s 28.9 ms was 13.9 ms of directory lookups, of which the hash itself was 0.7 ms and
+/// almost all the rest was that compare). It is exact — a hash collision still compares every byte — and the
+/// word loop does not depend on the vector lowering whose byte-vector reduce is slow here.
+const DirKeyContext = struct {
+    pub fn hash(_: DirKeyContext, key: []const u8) u64 {
+        return std.hash.Wyhash.hash(0, key);
+    }
+    pub fn eql(_: DirKeyContext, a: []const u8, b: []const u8) bool {
+        return equalBytes(a, b);
+    }
+};
+
+/// Byte equality, eight at a time. Endianness cannot matter: this is equality, not a value.
+fn equalBytes(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    var differing: u64 = 0;
+    var index: usize = 0;
+    while (index + 8 <= a.len) : (index += 8) {
+        differing |= std.mem.readInt(u64, a[index..][0..8], .little) ^
+            std.mem.readInt(u64, b[index..][0..8], .little);
+    }
+    while (index < a.len) : (index += 1) differing |= @as(u64, a[index] ^ b[index]);
+    return differing == 0;
+}
+
 /// The two facts a path's decision needs about the path's **directory**, both fixed while this stack's rules
 /// are loaded: the flattened matcher that governs it, and whether it (or one of its ancestors) is excluded.
 ///
@@ -63,26 +90,17 @@ const Chain = struct {
 
     fn decide(self: Chain, path: []const u8, base: []const u8, is_dir: bool) ?bool {
         var best: ?usize = null;
-        var start: usize = 0;
-        while (start <= path.len) {
-            const slash = nextSeparator(path, start);
-            const segment = path[start..slash];
-            const last_segment = slash == path.len;
-            // An unanchored literal names one file or directory; only the final segment can be that name.
-            // A matching ancestor directory is already an `ancestor_excluded` fact, so scanning the earlier
-            // segments here would match a negation like `!a` against `d/a/build` and re-include the file.
-            if (last_segment) {
-                if (self.literals.get(segment)) |at| {
-                    if (best == null or at < best.?) best = at;
-                }
+        // An unanchored literal names one file or directory, and a directory-only one names a directory, so
+        // only the path's own final segment can be that name. A matching *ancestor* directory is already an
+        // `ancestor_excluded` fact — `Stack.dirState` asks each ancestor through its own parent's chain — and
+        // asking about the earlier segments here was wrong twice over: it matched a negation like `!a`
+        // against `d/a/build`, and, because this chain carries the candidate directory's own file, it let
+        // that file's `a/` match the `a` segment above it, which git scopes away.
+        if (self.literals.get(base)) |at| best = at;
+        if (is_dir) {
+            if (self.literals_dir_only.get(base)) |at| {
+                if (best == null or at < best.?) best = at;
             }
-            if (!last_segment or is_dir) {
-                if (self.literals_dir_only.get(segment)) |at| {
-                    if (best == null or at < best.?) best = at;
-                }
-            }
-            if (last_segment) break;
-            start = slash + 1;
         }
 
         // The directory-only anchored literal rules, by the depth they are anchored at. A literal pattern can
@@ -143,6 +161,11 @@ fn chainRuleMatches(rule: gitignore.Rule, path: []const u8, base: []const u8, is
         if (!std.mem.eql(u8, head, path_first)) return false;
     }
     if (!rule.directory_only) return chainMatchText(rule, if (rule.anchored) path else base);
+    // An unanchored `pat/` names a directory at any level *below its own file*, so the path's own base name
+    // is the only thing it can be tested against here; a matching ancestor is `dirState`'s inherited fact.
+    // Testing whole path prefixes is how the indexed matcher missed a nested `out/` and could match a
+    // segment above the rule file's scope (`a/.gitignore` holding `a/` does not exclude `a/x`).
+    if (!rule.anchored) return is_dir and chainMatchText(rule, base);
     if (is_dir and chainMatchText(rule, path)) return true;
     var index: usize = 0;
     while (index < path.len) : (index += 1) {
@@ -166,6 +189,11 @@ fn chainMatchText(rule: gitignore.Rule, text: []const u8) bool {
 /// `decideNaive` calls this.
 fn chainRuleMatchesNaive(rule: gitignore.Rule, path: []const u8, base: []const u8, is_dir: bool) bool {
     if (!rule.directory_only) return chainMatchTextNaive(rule, if (rule.anchored) path else base);
+    // The historical branch tested the whole path and its prefixes, so an unanchored `out/` never saw the
+    // base name of a nested directory (`b/d/out`) — git excludes it. An unanchored `pat/` names a directory
+    // at any level below its file, so its own base name is what it is tested against; an excluded ancestor
+    // is `decideNaive`'s walk, not this check.
+    if (!rule.anchored) return is_dir and chainMatchTextNaive(rule, base);
     if (is_dir and chainMatchTextNaive(rule, path)) return true;
     var index: usize = 0;
     while (index < path.len) : (index += 1) {
@@ -234,7 +262,7 @@ pub const Stack = struct {
     path_scratch: std.ArrayListUnmanaged(u8) = .empty,
     /// What a decision needs to know about its path's directory, keyed by that directory. A path list visits the
     /// same directories many times, and the rules are a snapshot, so both facts cannot change under this stack.
-    dir_states: std.StringHashMapUnmanaged(DirState) = .{},
+    dir_states: std.HashMapUnmanaged([]const u8, DirState, DirKeyContext, std.hash_map.default_max_load_percentage) = .{},
     /// The same cache for `decideNaive`, kept apart so the two implementations cannot hide a disagreement.
     excluded_dirs_naive: std.StringHashMapUnmanaged(bool) = .{},
 
@@ -548,4 +576,63 @@ test "the deepest .gitignore wins, and a negation re-includes" {
     defer off.deinit();
     try testing.expect(!try off.ignored(root, "x.log", false)); // respect = false lists everything
     try testing.expectEqual(@as(?bool, null), try off.decide("x.log", false));
+}
+
+test "an unanchored directory-only literal matches a nested directory, and a negation re-includes it" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "exclude");
+    try tmp.dir.createDirPath(io, "negate");
+    try tmp.dir.writeFile(io, .{ .sub_path = "exclude/.gitignore", .data = "out/\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "negate/.gitignore", .data = "!out/\n" });
+
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const count = try tmp.dir.realPath(io, &path_buffer);
+    const root = path_buffer[0..count];
+
+    var arena_alloc = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
+
+    // The gap the differential fuzz found: the indexed chain saw the `out` segment, `decideNaive` did not.
+    var exclude = Stack.init(arena, io, try std.fmt.allocPrint(arena, "{s}/exclude", .{root}), true);
+    defer exclude.deinit();
+    try testing.expectEqual(@as(?bool, true), try exclude.decide("b/d/out", true));
+    try testing.expectEqual(@as(?bool, true), try exclude.decideNaive("b/d/out", true));
+    // Directory-only still means a file named `out` is not the thing the pattern names.
+    try testing.expectEqual(@as(?bool, null), try exclude.decide("b/d/out", false));
+    try testing.expectEqual(@as(?bool, null), try exclude.decideNaive("b/d/out", false));
+
+    // The same match with a negation in the file: the deepest file's last matching pattern re-includes it.
+    var negate = Stack.init(arena, io, try std.fmt.allocPrint(arena, "{s}/negate", .{root}), true);
+    defer negate.deinit();
+    try testing.expectEqual(@as(?bool, false), try negate.decide("b/d/out", true));
+    try testing.expectEqual(@as(?bool, false), try negate.decideNaive("b/d/out", true));
+}
+
+test "a nested file's rule cannot match a segment above that file" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "a");
+    // In `a/.gitignore`, `a/` names a child directory `a/a`; it does not name the `a` the file lives in, so
+    // it cannot exclude `a/x`. git agrees (`git check-ignore a/x` is silent, `a/a` is excluded).
+    try tmp.dir.writeFile(io, .{ .sub_path = "a/.gitignore", .data = "a/\n" });
+
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const count = try tmp.dir.realPath(io, &path_buffer);
+    const root = path_buffer[0..count];
+
+    var arena_alloc = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_alloc.deinit();
+    var stack = Stack.init(arena_alloc.allocator(), io, root, true);
+    defer stack.deinit();
+
+    try testing.expectEqual(@as(?bool, null), try stack.decide("a/x", false));
+    try testing.expectEqual(@as(?bool, null), try stack.decideNaive("a/x", false));
+    try testing.expectEqual(@as(?bool, true), try stack.decide("a/a", true));
+    try testing.expectEqual(@as(?bool, true), try stack.decideNaive("a/a", true));
 }
