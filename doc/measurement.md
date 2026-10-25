@@ -222,3 +222,27 @@ start-up subtracted) and 108.1 ms (a single process-level run). That is a ~2x sp
 document, and it comes from what is being timed: the min-of-9 paired protocol, a single 12-round run, and a full process with
 start-up. **The comparable number is the paired minimum from one session, and comparisons must stay inside one session** - the
 tables above are all paired, but a total quoted from a different protocol is not comparable with them.
+## Splitting after the precheck: JS 3.3-3.8x, Java 1.7x on backtrack
+
+Both ports split the path into segments before the last-segment precheck that then rejects it. Measured on the workload paths
+themselves rather than by a primitive benchmark: the *paid* split was 1.38 us of a 2.50 us JS decision on backtrack (55%) and
+2.17 of 5.45 us in Java (40%) - and, correcting an earlier list, Java `anchored` and JS `deep` paid nothing at all, because
+anchored literals are indexed and JS's regex path never splits.
+
+The precheck now answers from the raw path - the tail after the last `/` - and only a candidate that survives it pays for
+segments, at most once per decision. The tail hint is recorded for `**` rules too. Directory-only rules still split
+unprechecked, because their ancestor branch asks about interior segments.
+
+| workload   | JS before -> after                       | Java before -> after                         |
+| ---------- | ---------------------------------------: | -------------------------------------------: |
+| backtrack  | 59.9 -> 18.4 (3.3x), 59.7 -> 15.8 (3.8x) | 130.8 -> 74.4 (1.76x), 129.1 -> 75.3 (1.71x) |
+| deep       | 22.8 -> 21.5                             | 99.1 -> 82.5, 99.7 -> 71.1                   |
+| doublestar | 63.0 -> 55.5                             | 163.5 -> 155.4                               |
+| total      | 175.7 -> 125.5, 178.4 -> 121.3           | 496.6 -> 417.8, 512.0 -> 405.9               |
+
+Two sessions, reversed order, paired alternating, min of 9. The controls (`flat`, `anchored`, `dirs` - zero splits either
+side) moved by up to 22%, which is what the process floor looks like. After the change a Java decision pays 0 splits on
+`backtrack` and `deep`, 0.27 on `doublestar`; JS the same.
+
+This was found by measuring a residual, not by looking for an optimisation: the number came out of a leave-one-out attribution
+that was checking something else entirely.

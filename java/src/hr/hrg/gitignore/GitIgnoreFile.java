@@ -254,7 +254,10 @@ public final class GitIgnoreFile {
                 start = slash + 1;
             }
         }
-        // One split per decision: the array is the same for every rule, and a file with 8 rules used to split 8 times.
+        // One split per decision, and only once a rule's last segment has accepted the raw path: on `backtrack`
+        // both DP rules end `*.class` / `*.g4` against `.java` paths, so the split that used to run before the
+        // precheck is never paid. A directory-only rule is the exception — its ancestor-prefix branch asks about a
+        // different segment, so its split is still paid.
         String[] parts = null;
         for (int index = rules.size() - 1; index > best; index--) {
             Rule rule = rules.get(index);
@@ -262,6 +265,9 @@ public final class GitIgnoreFile {
                 continue;
             }
             if (parts == null) {
+                if (rule.tailRejects(scoped)) {
+                    continue;
+                }
                 parts = scoped.split("/", -1);
             }
             if (rule.matches(scoped, parts, isDirectory)) {
@@ -329,9 +335,29 @@ public final class GitIgnoreFile {
                     Glob.compile(line, anchored, segment -> translate(segment)));
         }
 
-        /** Whether this pattern excludes {@code path} (which is already scoped to its own directory). */
-        boolean matches(String path, boolean isDirectory) {
-            return matches(path, path.split("/", -1), isDirectory);
+        /**
+         * Whether a whole-path match is impossible because the final pattern segment cannot match the path's final
+         * segment — the same necessary condition {@link Glob#matches} applies, asked of the raw path so the caller can
+         * decide whether the split is worth paying at all.
+         *
+         * <p>{@code false} for a directory-only rule: its ancestor-prefix branch asks about a different segment, whose
+         * last segment is not the path's, so the path's own tail cannot reject it. {@code false} when the final segment
+         * is {@code **}, which has no such condition.</p>
+         */
+        boolean tailRejects(String path) {
+            if (directoryOnly) {
+                return false;
+            }
+            Glob.Segment tail = segments[segments.length - 1];
+            if (tail.doubleStar()) {
+                return false;
+            }
+            int slash = path.lastIndexOf('/');
+            String last = slash < 0 ? path : path.substring(slash + 1);
+            if (tail.literal() != null) {
+                return !tail.literal().equals(last);
+            }
+            return !tail.regex().matcher(last).matches();
         }
 
         /** The same question with the path already split, so a caller deciding many rules splits it once. */

@@ -148,11 +148,13 @@ function parseRule(rawLine) {
   if (line.length === 0) {
     return null;
   }
-  // The last segment, for the last-segment precheck the regex path gets: in any successful whole-path match a
-  // non-`**` final pattern segment must match the path's last segment. A literal tail compares with no slice and a
-  // wildcard tail keeps one small anchored regex. Only the regex rules need it — the DP path has its own precheck.
+  // The last segment, for the last-segment precheck: in any successful whole-path match a final pattern segment
+  // that is not `**` must match the path's last segment. A literal tail compares with no slice and a wildcard tail
+  // keeps one small anchored regex. The regex rules use it before the whole-path regex; the DP rules use it on the
+  // raw path, before the split — so it is recorded for a `**` rule too, not only for the regex ones.
   const doubleStar = line.split('/').includes('**');
   const lastSegment = line.slice(line.lastIndexOf('/') + 1);
+  const lastIsDoubleStar = lastSegment === '**';
   const lastIsLiteral = !hasWildcardByte.test(lastSegment);
   return {
     negated,
@@ -161,8 +163,8 @@ function parseRule(rawLine) {
     // A plain name (no wildcard, no escape) is indexed rather than scanned: the directory-only ones are what a
     // per-path prefix walk asks about most, and a name is the whole question for the unanchored form.
     literal: hasWildcardByte.test(line) ? null : line,
-    lastLiteral: !doubleStar && lastIsLiteral ? lastSegment : null,
-    lastPattern: doubleStar || lastIsLiteral ? null : new RegExp(`^${translateGlob(lastSegment)}$`),
+    lastLiteral: !lastIsDoubleStar && lastIsLiteral ? lastSegment : null,
+    lastPattern: !lastIsDoubleStar && !lastIsLiteral ? new RegExp(`^${translateGlob(lastSegment)}$`) : null,
     indexed: false,
     // Both anchors are required: Java's `Matcher.matches()` anchors the whole pattern, while JavaScript's
     // `RegExp.test` searches — and a missing `^` lets an anchored pattern match a path *suffix*. That one
@@ -332,8 +334,11 @@ export function parseGitignore(relativeDirectory, text) {
         }
       }
 
-      // Split once for every `**` rule of this file, and only if one of them is reached: a file whose patterns all
-      // compile to a regex pays no split at all (the `*.log`-shaped rule sets of the small workloads).
+      // Split once for every rule of this file that needs segments, and only when one of them is actually reached
+      // *and* survives the last-segment precheck on the raw path: a file whose patterns all compile to a regex pays
+      // no split at all (the `*.log`-shaped rule sets of the small workloads), and a DP rule whose final segment
+      // cannot match this path is rejected before the split exists (the `backtrack` workload, where both DP rules
+      // end `*.class` / `*.g4` and every path is a `.java`).
       let segments = null;
       let tail = null;
       for (let index = rules.length - 1; index > best; index--) {
@@ -341,10 +346,16 @@ export function parseGitignore(relativeDirectory, text) {
         if (rule.indexed) {
           continue;
         }
-        if (rule.segments !== null && segments === null) {
-          segments = scoped.split('/');
-        }
-        if (rule.segments === null && rule.lastPattern !== null && tail === null) {
+        if (rule.segments !== null) {
+          if (segments === null) {
+            // A directory-only rule is not prechecked: its ancestor branch asks about interior segments, whose last
+            // segment is not the path's, so the path's own tail cannot reject it. Its split is paid as before.
+            if (!rule.directoryOnly && !tailMatches(rule, scoped)) {
+              continue;
+            }
+            segments = scoped.split('/');
+          }
+        } else if (rule.lastPattern !== null && tail === null) {
           tail = lastSegmentOf(scoped);
         }
         if (matches(rule, scoped, isDirectory, segments, tail)) {
@@ -377,7 +388,23 @@ function lastSegmentOf(path) {
   return slash < 0 ? path : path.slice(slash + 1);
 }
 
-function matches(rule, path, isDirectory, text = null, tail = null) {
+/**
+ * Whether the path can still match by its final segment: the same necessary condition `segmentsMatch` applies,
+ * asked of the raw path so the caller can decide whether the split is worth paying at all. Only valid for a
+ * whole-path match — a directory-only rule also asks about ancestor prefixes, and their last segment is not the
+ * path's — and `true` when the final pattern segment is `**`, which has no such condition.
+ */
+function tailMatches(rule, path) {
+  if (rule.lastLiteral !== null) {
+    return endsWithSegment(path, rule.lastLiteral);
+  }
+  if (rule.lastPattern !== null) {
+    return rule.lastPattern.test(lastSegmentOf(path));
+  }
+  return true;
+}
+
+function matches(rule, path, isDirectory, segments, tail) {
   if (rule.segments === null) {
     // No `**`: the compiled regex is both correct and faster (see the A/B in conformance/findings-js.md).
     if (!rule.directoryOnly) {
@@ -405,8 +432,8 @@ function matches(rule, path, isDirectory, text = null, tail = null) {
     return false;
   }
 
-  // Split once per decision, not once per rule: `text` arrives from the caller that already has it.
-  const segments = text ?? path.split('/');
+  // Split once per decision, not once per rule: `segments` arrives from the caller that already has it (and that
+  // only built it after `tailMatches` accepted the raw path).
   if (!rule.directoryOnly) {
     return segmentsMatch(rule.segments, segments);
   }
