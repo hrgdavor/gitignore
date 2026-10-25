@@ -56,6 +56,10 @@ Provenance: [`doc/measurement.md`](../measurement.md), "Steady state, 12 rounds,
   last three changes (`7053629`, `ecff1ff`, `9fb0d30`), all of which touched `src/ignore.zig` / `src/gitignore.zig`
   only. The port rows are therefore accurate for the port code and stale against the reference.
 - **Speed-ups are against the initial table above**, per row, same column.
+- **Later on 2026-10-25, the four-residual track re-measured both ports**: **JS 165.0 ms and Java 517.8 ms for 12 rounds**
+  (paired, min of 9), after a size gate on the unanchored-name index in both ports and a last-segment precheck for the JS
+  regex rules. The rows above predate those two changes *and* the three indexes, so do not mix them with the new totals —
+  [`shared.md`](shared.md#the-four-residuals-of-2026-10-25-measured-in-both-ports) has the per-workload table.
 
 What those speed-ups mean, stated per port rather than as one slogan:
 
@@ -115,19 +119,21 @@ write it down is the table above rather than the sentence.
 
 Every row links to the page that gives the split, the change, the measured effect and the risk.
 
-| #   | change                                                         | port(s)       | measured effect                                                                              | detail                                                                           |
-| --  | -------------------------------------------------------------  | ----------    | -------------------------------------------------------------------------------------------- | -----------------------------------                                              |
-| 1   | replace regex translation with the segment DP                  | all three     | `backtrack` 2902.4 → 1462.6 ms (2.0x) on JS; Java 212 486 → 50 010 ms (4.25x)                | [shared](shared.md#1-replace-the-regex-translation-with-a-segment-dp)            |
-| 2   | memoise a directory's decided answer, cleared on `push`/`pop`  | JS, Java      | JS 19 384.5 → 1819.8 ms (10.6x); Java 13 246.7 → 2489.7 ms (5.3x)                            | [shared](shared.md#2-memoise-a-directorys-decided-answer)                        |
-| 3   | compare a literal segment with equality, not a regex/`Matcher` | Java, JS, Zig | Java 50 010 → 18 217 ms (**3.03x**); JS 2-3% / 4-8%; Zig by construction                     | [shared](shared.md#3-compare-literal-segments-with-equality)                     |
-| 4   | split the path once per decision                               | JS, Java      | JS `backtrack` 6558 → 1489 ms with reused rows (4.4x); Java 18 217 → 17 723 ms (2.8%)        | [shared](shared.md#4-split-the-path-once-per-decision)                           |
-| 5   | a last-segment precheck for non-`**` patterns                  | Zig           | `backtrack` 101.6 → 28.4 ms (**3.58x**)                                                      | [shared](shared.md#5-a-last-segment-precheck)                                    |
-| 6   | per-directory `DirState` (chain + inherited ancestor flag)     | Zig           | total 1 081 → 284 ms (**3.81x**); `backtrack` 799.4 → 103.2 ms (7.7x)                        | [zig](zig.md#2-a-directory-chain-in-one-hash-dirstate)                           |
-| 7   | `Chain.literal_dirs`: anchored literals bucketed by depth      | Zig           | `doublestar` 135.4 → 15.1 ms (**8.99x**); total 281.6 → 158.2 ms (1.78x)                     | [zig](zig.md#3-anchored-literal-bucket-chainliteral_dirs)                        |
-| 8   | a manual `nextSeparator` instead of `indexOfScalarPos`         | Zig           | 20.4 → 3.66 ms of separator scanning over the same paths                                     | [zig](zig.md#4-the-last-segment-precheck-and-a-manual-nextseparator)             |
-| 9   | rule classes at parse time, and a per-chain index              | Zig           | in place before the 3.81x baseline; rules tested per path 5 / 19 / 98 / 17 / 45              | [zig](zig.md#1-the-baseline-in-place-before-any-of-this)                         |
-| 10  | keep the compiled regex unless the pattern has a `**`          | JS            | full DP was 1.6x-6x slower on five rows; hybrid 1661.2 vs regex 3128.2 and full DP 2360.7 ms | [js](js.md#3-the-hybrid-the-regex-everywhere-except-patterns-with-a-double-star) |
-| 11  | reused scratch rows, and `ThreadLocal` scratch in Java         | JS, Java      | inside row 4's 4.4x and 2.8%; the DP's arithmetic was never the cost                         | [js](js.md#1-allocation-discipline-the-first-dp-was-slower-than-the-regex)       |
+| #   | change                                                         | port(s)       | measured effect                                                                                | detail                                                                                           |
+| --  | -------------------------------------------------------------  | ----------    | --------------------------------------------------------------------------------------------   | -----------------------------------                                                              |
+| 1   | replace regex translation with the segment DP                  | all three     | `backtrack` 2902.4 → 1462.6 ms (2.0x) on JS; Java 212 486 → 50 010 ms (4.25x)                  | [shared](shared.md#1-replace-the-regex-translation-with-a-segment-dp)                            |
+| 2   | memoise a directory's decided answer, cleared on `push`/`pop`  | JS, Java      | JS 19 384.5 → 1819.8 ms (10.6x); Java 13 246.7 → 2489.7 ms (5.3x)                              | [shared](shared.md#2-memoise-a-directorys-decided-answer)                                        |
+| 3   | compare a literal segment with equality, not a regex/`Matcher` | Java, JS, Zig | Java 50 010 → 18 217 ms (**3.03x**); JS 2-3% / 4-8%; Zig by construction                       | [shared](shared.md#3-compare-literal-segments-with-equality)                                     |
+| 4   | split the path once per decision                               | JS, Java      | JS `backtrack` 6558 → 1489 ms with reused rows (4.4x); Java 18 217 → 17 723 ms (2.8%)          | [shared](shared.md#4-split-the-path-once-per-decision)                                           |
+| 5   | a last-segment precheck for non-`**` patterns                  | Zig           | `backtrack` 101.6 → 28.4 ms (**3.58x**)                                                        | [shared](shared.md#5-a-last-segment-precheck)                                                    |
+| 6   | per-directory `DirState` (chain + inherited ancestor flag)     | Zig           | total 1 081 → 284 ms (**3.81x**); `backtrack` 799.4 → 103.2 ms (7.7x)                          | [zig](zig.md#2-a-directory-chain-in-one-hash-dirstate)                                           |
+| 7   | `Chain.literal_dirs`: anchored literals bucketed by depth      | Zig           | `doublestar` 135.4 → 15.1 ms (**8.99x**); total 281.6 → 158.2 ms (1.78x)                       | [zig](zig.md#3-anchored-literal-bucket-chainliteral_dirs)                                        |
+| 8   | a manual `nextSeparator` instead of `indexOfScalarPos`         | Zig           | 20.4 → 3.66 ms of separator scanning over the same paths                                       | [zig](zig.md#4-the-last-segment-precheck-and-a-manual-nextseparator)                             |
+| 9   | rule classes at parse time, and a per-chain index              | Zig           | in place before the 3.81x baseline; rules tested per path 5 / 19 / 98 / 17 / 45                | [zig](zig.md#1-the-baseline-in-place-before-any-of-this)                                         |
+| 10  | keep the compiled regex unless the pattern has a `**`          | JS            | full DP was 1.6x-6x slower on five rows; hybrid 1661.2 vs regex 3128.2 and full DP 2360.7 ms   | [js](js.md#3-the-hybrid-the-regex-everywhere-except-patterns-with-a-double-star)                 |
+| 11  | reused scratch rows, and `ThreadLocal` scratch in Java         | JS, Java      | inside row 4's 4.4x and 2.8%; the DP's arithmetic was never the cost                           | [js](js.md#1-allocation-discipline-the-first-dp-was-slower-than-the-regex)                       |
+| 12  | gate the unanchored-name index by chain size                   | JS, Java      | JS `backtrack` 159.3 → 61.0 ms (**2.61x**), `deep` 82.4 → 48.8; Java `backtrack` +12.7%/+17.5% | [shared](shared.md#3-the-unanchored-directory-name-index-gated-by-chain-size-kept-in-both-ports) |
+| 13  | last-segment precheck for the JS regex rules                   | JS            | `deep` 49.6 → 22.9 ms (**2.17x**); nearly every regex test was against an impossible path      | [shared](shared.md#4-the-last-segment-precheck-for-the-js-regex-rules-kept)                      |
 
 ## What did not work
 
@@ -142,6 +148,8 @@ rather than kept as complexity, and each is argued in full in the linked page.
 | a first-byte bitmap                                                | **0.9 ms** gained                                                  | the first byte was never the cost                                                        |
 | a last-directory memo                                              | no gain (13.2 ms compare vs 13.7 ms map-get), **regressed `deep`** | the directory key hash was already the cheap part                                        |
 | indexing exact anchored literals (not only directory-only ones)    | regressed `deep`                                                   | a chain holds one or two of them; one comparison beats an index walk                     |
+| interning the directory key (`Map<string,id>` + array)             | JS total **+1.9%**, `backtrack` −0.2%; Java total **−1.4%**        | the id map hashes the same string, so the hash is paid either way                        |
+| `int` tri-state instead of `Optional<Boolean>` on the hot path     | total **11.4% worse** (1.8% in the reversed order)                 | the JIT already scalar-replaced the `Optional` across the inlined calls                  |
 
 Provenance: rows 1 and 2, [`../measurement.md`](../measurement.md) (2026-10-23, `708366b`); rows 3-6, commit
 `9fb0d30` and `ecff1ff` (2026-10-25), i.e. measured by this session's track.
@@ -153,10 +161,12 @@ Provenance: rows 1 and 2, [`../measurement.md`](../measurement.md) (2026-10-23, 
   dynamic program runs at all. Measured by this session's track, 2026-10-25. The immediately preceding split, on
   `backtrack` alone, was DP rows 42.6 ms (41.7%), pattern+path splitting 22.6 ms (22.1%), chain literal scan 22.2 ms
   (21.8%) and chain lookup 14.6 ms (14.3%) (commit `9fb0d30`), which is what the precheck attacked.
-- **JS**: **87% of the residual is the direct rule scan** — there is no per-chain index in the port
-  ([`../measurement.md`](../measurement.md), 2026-10-24).
-- **Java**: **no phase split of the Java loop has been recorded**. What is said about Java's remaining cost in
-  [`java.md`](java.md) is inferred from the change history, and is labelled as such.
+- **JS**: after the 2026-10-25 gate and precheck the direct rule scan is no longer 87%: the remaining large rows are
+  **`path.split('/')` 4.4 ms/round on `backtrack`**, and the split runs before the DP precheck that then rejects both DP
+  rules ([`js.md`](js.md#7-the-2026-10-25-residuals-the-unanchored-scan-and-the-regex-precheck)).
+- **Java**: the first phase split of the loop was recorded on 2026-10-25, and it puts **`String.split("/", -1)` at 5.0
+  ms/round on `backtrack` (43% of its 11.6), 1.99 ms on `deep`** — larger than every residual the four-item track
+  attacked ([`java.md`](java.md#8-the-2026-10-25-residuals-the-unanchored-name-gate-and-two-rejections)).
 
 ## The files
 
@@ -189,8 +199,10 @@ The single most useful thing this directory records is methodological, and every
   (1.61x / 2.20x), not the cross-session one (16.9x / 23.1x).
 - **Give the ports the reference's per-chain index.** `doc/measurement.md` names it as the next lever for JS (87% of the
   residual is the direct rule scan) and it is unstarted. Everything in [`zig.md`](zig.md) §2-§3 is the shape to copy.
-- **A phase split of the Java loop.** Every other optimisation here began with one; Java has never had one, so its
-  "what is left" is a reading of the code rather than a profile.
+- **A phase split of the Java loop.** Every other optimisation here began with one; Java's first was recorded on
+  2026-10-25, and what it found is the next lever: `String.split("/", -1)` (5.0 ms/round on `backtrack`) and the eager
+  split before the DP precheck. Both ports have the same two problems, measured in
+  [`shared.md`](shared.md#the-four-residuals-of-2026-10-25-measured-in-both-ports).
 - **A stable measurement harness.** Item 5 of "How to read these numbers" is a defect in the method, not in the code: the
   same build has three totals. A harness that interleaves the configurations in one run and reports the paired
   difference would make every future entry in this directory cheaper to establish.

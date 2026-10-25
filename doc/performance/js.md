@@ -169,3 +169,27 @@ new JS** — which is what actually exercises `push`/`pop`. A port that skips th
 - **A push/pop fuzz in the port's own gate.** The 54,000-decision differential fuzz lives in the session that made the
   change, not in `js/`'s tests; `bun js/conformance.mjs` and the verdict gate both pass without exercising invalidation.
   That is a hole in the *gate*, not in the code.
+
+## 7. The 2026-10-25 residuals: the unanchored scan and the regex precheck
+
+Two of the four measured residuals were in this port, and they are the two that moved it: **342.0 → 165.0 ms per 12
+rounds (2.07x)** in one paired session and **350.8 → 179.4 ms (1.96x)** in a re-run, with `deep` **86.1 → 19.3 ms (4.46x;
+re-run 87.6 → 19.6)** and `backtrack` **154.7 → 61.6 ms (2.51x; re-run 164.9 → 60.1)**. The measurements and the method
+are in [shared](shared.md#the-four-residuals-of-2026-10-25-measured-in-both-ports); this page records what is particular
+to JS.
+
+- **The unanchored scan was 92% of `backtrack`.** A whole-path `indexOf` per name replaced 42 map gets for that workload,
+  so the port now uses the name index only at **four or more** unanchored directory literals and the scan below it
+  (`backtrack` 4,960 → 245 ns/decision; `deep` 1,204 → 169; `flat` at four names keeps the map, `dirs` at 40 keeps it).
+  The gate reads the chain sizes measured on the six workloads: 0, 0, 2, 3, 4, 40 — and the map produced a hit only on
+  `dirs`.
+- **The regex rules were tested against impossible paths.** `deep` paid 5 whole-path regex tests per decision with a tail
+  that rejected all 5; a last-segment precheck before the regex — `endsWithSegment` for a literal tail, one small anchored
+  regex for a wildcard tail — took `deep` **49.6 → 22.9 ms (2.17x)**.
+- **Interning the directory key was measured and reverted.** The 207-byte key's map get is 315 ns of the 398 ns
+  per-decision key cost, and a `Map<string,id>` still hashes the key: the intern form saved 64 ns (16% of the key cost),
+  which was **+1.9% of the total and −0.2% on `backtrack`** — inside the noise, so it was not kept.
+
+**What is left, measured on the same harness:** `path.split('/')` is 2.19 µs per decision on `backtrack` (4.4 ms/round),
+and it runs *before* the DP's last-segment precheck, which then rejects both DP rules at the tail. Splitting only after a
+tail precheck is the next lever, and it is bigger than anything else left in this port.

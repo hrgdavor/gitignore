@@ -249,3 +249,91 @@ every slow scan and here it is wrong twice.
 - **A port that does not need these pages.** The four largest wins are all "do not repeat work": one lookup instead of a
   walk, one split instead of one per rule, one comparison instead of a DP. A new port that starts with those gets the
   1.61x result without the six intermediate measurements.
+
+## The four residuals of 2026-10-25, measured in both ports
+
+The ports had just been levelled with the reference's three indexes. Four residuals were left. Every number below is a
+paired alternating run, min of 9, `--rounds 12`, unless it says it is a per-decision cost — those come from
+`.tmp/ports/micro-js.mjs` and `.tmp/ports/Micro.java`, which time the primitive on the workload's own data.
+**This session's track**, 2026-10-25.
+
+### 1. Interning the directory key — measured and reverted in both ports
+
+**What the split said.** The reference's string key cost `std.mem.eql` 14.16 of 14.88 ms on a 207-byte key. In the ports
+the key is a `Map`/`HashMap` lookup, and on `backtrack`'s 207-byte key it is: JS `slice` 83 ns + map get **315 ns** = 398
+ns per decision (7% of the 5,405 ns decision); deep 168 ns (5.5%); Java 277 ns (slice 196 + get 81), deep 273, flat 284.
+
+**The change, and the numbers.** Interning (`Map<string,id>` + an array indexed by id, so the state comparison is an
+integer) was implemented and measured as a paired A/B. **JS: 334 vs 398 ns per decision — 16% of the key cost, but only
+1.9% of the total (backtrack -0.2%); reverted.** **Java: 328 vs 277 ns — 51 ns *slower*; total -1.4%, backtrack +2.0%;
+reverted.** The reason is in the numbers above: a `Map<string,id>` keys on the same string, so the hash is paid either way,
+and Java's fresh-substring hash is already the cheap part of its get (81 ns of 277). The reference's win was a word-at-a-time
+`eql`, a primitive the ports' hash maps already have; there was no equality cost left to remove.
+
+### 2. Java's `Optional<Boolean>` — no measurable win, reverted
+
+**What the split said.** 4,000 `Optional` allocations per 2,000 decisions (**2 per decision**), counted by an instrumented
+copy. The microbenchmark prices `Optional.of` + `isPresent`/`get` at 185 ns against 88 ns for an `int` tri-state — ~97 ns
+each, ~3% of the 5.8 µs decision.
+
+**The change, and the numbers.** An `int` tri-state (`NO_OPINION`/`INCLUDE`/`EXCLUDE`) was threaded through
+`decideDirect`, `stateFor`, `walkAncestors` and `GitIgnoreFile.decideState`, with the public `Optional<Boolean>` methods
+kept as thin wrappers. Paired A/B: **total 505.8 → 571.1 ms (-11.4%), and in the reversed order 539.3 vs 529.9 (-1.8%);
+backtrack +0.7%/+0.3%, deep -2.8%/-7.9%. Reverted** — never a gain, most likely because the JIT was already
+scalar-replacing the `Optional` across the inlined calls, and the extra tri-state layer only moved work around.
+
+### 3. The unanchored directory-name index — gated by chain size, kept in both ports
+
+**What the split said.** The index walks every segment of the path and does one name lookup per segment in order to answer a
+question about a *directory* name. Per decision: JS `backtrack` **4,960 ns of its 5,405 ns decision (92%)**, deep 1,204
+(39%), flat 114 (23%), dirs 133; a whole-path `indexOf` per name costs 245 / 169 / 181 / **1,937** instead. Java: 1,661 /
+612 / 266 / 293 against 294 / 273 / 338 / 714.
+
+**The change.** The name index is used only when a file has **four or more** unanchored directory literals; below that, the
+name is found with `indexOf` plus a `/` boundary check, which builds no segment string. The six workloads' chain sizes are
+0, 0, 2, 3, 4, 40, and the hit rate is "every decision" only for `dirs` (40 names); on flat/deep/backtrack the map produced
+no hit at all. That is why the threshold sits at four: below it the scan is cheaper, above it the map wins.
+
+**Measured effect.** **JS `backtrack` 159.3 → 61.0 ms (2.61x), deep 82.4 → 48.8 (1.69x), total 340.2 → 197.5 (1.72x).**
+**Java `backtrack` +12.7% and +17.5% in two sessions, deep +6.4% in both, total +4.4% / +9.3%** (flat +11.9% then -9.7%,
+i.e. inside the noise; the gate cannot affect `doublestar`/`anchored`/`dirs`, which have 0 or 40 names).
+
+### 4. The last-segment precheck for the JS regex rules — kept
+
+**What the split said.** The JS regex rules were tested against paths that could not match them: `flat` 4 regex tests per
+decision with a tail that rejects 3.86 of them, `deep` 5 with 5 rejects, `doublestar` 3.2 with 4 of 4. A non-`**` final
+pattern segment must match the path's last segment in any successful match, so nearly every one was a whole-path regex test
+that a single comparison could have rejected.
+
+**The change.** `parseRule` records the last segment; `matches` checks it before the whole-path regex — `endsWithSegment`
+(no slice) for a literal tail, one small anchored regex on the last segment for a wildcard tail. The DP path already had it.
+
+**Measured effect.** On top of item 3: **`deep` 49.6 → 22.9 ms (2.17x) and 51.0 → 23.1 (2.21x)**, total 1.09x / 1.29x;
+`doublestar` 6.6% then -21.1% and `flat` ±22% are this bench's noise on the small rows.
+
+### The final rows
+
+Two paired base→final sessions. The small workloads (`flat`, `dirs`) sit at the process floor where the start-up
+subtraction dominates — `flat` read 14.5 → 9.8 in one session and 5.9 → 12.2 in the other — so their rows are not a
+result. The rows that are stable are shown with both sessions.
+
+| workload   | JS before     | JS after           | Java before | Java after        |
+| ---------- | ------------: | -----------------: | ----------: | ----------------: |
+| flat       | floor         | —                  | 34.5        | 30.6              |
+| deep       | 86.1 / 87.6   | **19.3 / 19.6**    | 124.1       | 121.2             |
+| doublestar | 63.7 / 67.8   | 57.8 / 63.9        | 154.9       | 172.0             |
+| anchored   | 16.7 / 14.8   | 11.6 / 12.2        | 40.9        | 42.4              |
+| dirs       | floor         | —                  | 22.0        | 20.9              |
+| backtrack  | 154.7 / 164.9 | **61.6 / 60.1**    | 149.5       | **130.9**         |
+| total      | 342.0 / 350.8 | **165.0 / 179.4**  | 525.8       | **517.8 (1.02x)** |
+
+The JS total is **1.96-2.07x**; the Java total is **1.02x**. Java's total is the honest one: only backtrack moves (four
+paired runs: +12.7%, +17.5%, +14.2%, +17.0%); a second final session measured backtrack +17.0%, deep +18.3% and total
++7.3%, and the doublestar/anchored rows cannot be affected by a gate that their chains do not enter. Correctness after
+every step: `bun scripts/check-verdicts.mjs` **6/6 workloads, 10,000 byte-identical verdicts**; ports 34/34 each; `bun
+test` 34.
+
+**What is left, from the same harness.** Java's `String.split("/", -1)` is now the largest single cost in both ports:
+**2.5 µs per decision on `backtrack` = 5.0 ms/round (43% of 11.6), 1.99 ms deep, 1.15 doublestar, 1.08 anchored** (JS:
+2.19 µs, 4.4 ms/round on backtrack). And both ports split the path *before* the DP's last-segment precheck runs, so on
+`backtrack` every split is spent on two DP rules that the precheck then rejects. Neither was in this session's brief.

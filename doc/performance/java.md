@@ -189,3 +189,29 @@ measured as a loss on five of six rows. Both are correct for their own code: Jav
 - **The unmeasured third criterion.** "DP when two or more `**`, or directory-only" is recorded as sound but unmeasured
   after the edit broke `decide`. If anyone reopens the criterion question, that is the variant with a reason to exist —
   and the one that has to survive an interleaved paired run, not two separate ones.
+
+## 8. The 2026-10-25 residuals: the unanchored-name gate, and two rejections
+
+The Java port got a phase split for the first time, from an instrumented copy of the sources, and the four residuals were
+measured before anything changed. The per-decision costs, the A/B tables and the method are in
+[shared](shared.md#the-four-residuals-of-2026-10-25-measured-in-both-ports); this page records what is particular to Java.
+
+- **Kept: a size gate on the unanchored-name index.** Below four unanchored directory literals the port answers `best`
+  with a whole-path `indexOf` per name (no substring, no per-segment map get); at four or more it keeps the map. The six
+  chains are 0, 0, 2, 3, 4, 40 names long and the map hit only on `dirs`. Measured: **`backtrack` +12.7% and +17.5% in two
+  sessions, `deep` +6.4% in both**; `flat` +11.9% then −9.7% and the other three rows within noise, so the total (+4.4%,
+  +9.3% on the three target rows) is not the claim — the rows are. A final base→final session measured `backtrack`
+  **149.5 → 130.9 ms (14.2%)**.
+- **Rejected: interning the directory key.** `HashMap.get` on the fresh 207-byte substring is 277 ns per decision (of
+  which the slice is 196); a `Map<String,Integer>` + array form was 328 ns, because the id map hashes the same key and adds
+  a second lookup. Paired A/B: total **−1.4%**, `backtrack` +2.0%. Not kept.
+- **Rejected: an `int` tri-state instead of `Optional<Boolean>`.** The hot path really does allocate **2 Optionals per
+  decision**, and the microbenchmark prices one at ~97 ns (~3% of `backtrack`), but the paired A/B measured the tri-state
+  **11.4% worse** in the total (and 1.8% worse in the reversed order), `backtrack` +0.7%/+0.3%. The JIT was evidently
+  already scalar-replacing the `Optional` across the inlined calls; the public `Optional` API was left untouched.
+
+**What is left, and it is not in this brief:** `String.split("/", -1)` is now the largest single cost in this port —
+**2.5 µs per decision on `backtrack` (5.0 ms/round, 43% of 11.6), 1.99 ms on `deep`, 1.15 on `doublestar`, 1.08 on
+`anchored`**. A manual split or a `count` computed without an array would attack it directly. And `decide` splits the path
+*before* `Glob.matches` runs its last-segment precheck, so on `backtrack` the split is spent on two DP rules the precheck
+rejects. Both are bigger than the four residuals this session measured.
