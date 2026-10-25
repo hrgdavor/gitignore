@@ -392,3 +392,41 @@ positive case); it changes public matcher answers, so it wants its own vectors a
 this change.
 
 ---
+## Rejected: bit-parallel DP for `**` (measured 2026-10-25)
+
+The idea: represent the reachable path positions as a `u64` bitmask, one mask per pattern segment, with `**` advancing by a
+`log2(n)`-step prefix closure (`x |= x << 1; x |= x << 2; ...`) instead of looping over positions. It is the standard way to make
+`**` cheap, and it was measured before anything was written.
+
+**The ceiling first, because it decides the question.** If the DP cost were exactly zero:
+
+| port | loop-only total | with DP cost 0 | maximum buy |
+| ---- | --------------: | -------------: | ----------: |
+| Zig  | 6.2 ms          | 6.2 ms         | **0.0 %**   |
+| JS   | 62.2 ms         | 60.8 ms        | **2.2 %**   |
+| Java | 95.9 ms         | 91.2 ms        | **4.9 %**   |
+
+Zig never enters the DP at all (0 calls, 0 cells, counters verified against a synthetic `a/**/b`): `**/x` is normalised at parse
+time into an unanchored literal or suffix rule, and `backtrack`'s `src/**/test/**/impl/**/*.g4` is a suffix-bucket candidate its
+tail precheck rejects. Five of six workloads now reach the DP zero times in every port. The buckets and the precheck did to the
+matcher what they were supposed to do.
+
+**A prototype in isolation** (Java, the largest absolute DP share, 4.7 ms): same compiled segments, only the row algorithm
+differs. Real workload pairs whose precheck passes (810): 564 -> 464 ns/match, **1.21x**. Adversarial pairs (many `**`, a
+trailing `**`, `**` beside a literal, 71-segment paths): 1333 -> 883 ns, **1.51x**. Multiply by the share: **0.9 % of Java's
+total**, 1.7 % if every call were adversarial.
+
+**The oracle, because a rewrite needs one.** 1,200 randomised `**`-heavy cases over three seeds plus the named corners; 836
+compared, 364 excluded because an ignored ancestor directory makes git's answer a chain answer rather than a pattern answer.
+Disagreements: current matcher **0/836**, bit-parallel prototype **0/836** - and the oracle still caught a real prototype bug
+(a trailing `**` shifted the closure into the wrong word), which is precisely the class of error the vectors cannot see. The
+residual risk is the >63-segment word carry, not the closure.
+
+**Verdict: not worth implementing.** Every ceiling is under this project's 10 % rule, and the measured per-call ratio turns
+Java's 4.9 % into 0.9 %. The complexity it would add - a second matcher shape, a word-array path, a closure invariant - cannot
+be earned by one percent.
+
+**What the same measurement did argue for**, and what a future track should do instead: port Zig's parse-time `**/x`
+normalisation to the JS port (a five-line variant measured here gives 0 DP calls per decision and `doublestar` 17.0 -> 15.9 ms
+with all 10,000 verdicts identical), and give Java the literal/suffix rule classes that Zig and JS already have. Java's 4.9 % is
+its *universal* DP - every pattern goes through it - and no `**` rewrite touches that.
