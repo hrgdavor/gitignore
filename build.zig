@@ -1,4 +1,22 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+// gitignore is developed and verified against exactly this compiler. 0.17 moved the whole I/O surface
+// (`std.Io`, `std.process.Init`), so a different minor version does not build this code — and one line that
+// says so is worth more than the first thousand mismatched symbols. The same check is in check-zig.mjs, so
+// the message is available before a build starts.
+const required_zig = "0.17";
+const toolchain_hint = "D:\\wrk\\zig\\17\\zig.exe";
+comptime {
+    const actual = std.fmt.comptimePrint("{d}.{d}.{d}", .{
+        builtin.zig_version.major,
+        builtin.zig_version.minor,
+        builtin.zig_version.patch,
+    });
+    if (builtin.zig_version.major != 0 or builtin.zig_version.minor != 17) {
+        @compileError("gitignore requires Zig " ++ required_zig ++ " (" ++ toolchain_hint ++ "), got " ++ actual);
+    }
+}
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});

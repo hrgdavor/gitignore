@@ -27,6 +27,7 @@
     "access": "public"
   },
   "scripts": {
+    "build": "bun build.mjs",
     "conformance": "bun js/conformance.mjs",
     "test": "bun test",
     "java": "bun java/run.mjs"
