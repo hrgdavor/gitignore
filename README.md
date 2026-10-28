@@ -233,50 +233,24 @@ Same as `fs-meta`: `LicenseRef-GPL-3.0-with-Commons-Clause`, `Copyright (c) 2026
 
 ## Ports: measured, and what the numbers say
 
-Three implementations, the same 34 vectors, the same bytes from `bench/perf.mjs`. Start-up is measured separately (a run
-with an empty path list) and **subtracted**, so the table is the matcher, not the loader:
+Three implementations, the same 34 vectors, the same bytes from `bench/perf.mjs`. Start-up is measured separately.
 
-| workload      | Zig         | JS (hybrid)           | JS (regex)            | JS (full DP)          |
-| --------      | --:         | ----------:           | ---------:            | -----------:          |
-| flat          | 0.7 ms      | 5.2 ms                | 0.8 ms                | 8.1 ms                |
-| deep          | 17.6 ms     | 115.8 ms              | 111.6 ms              | 241.9 ms              |
-| doublestar    | 23.5 ms     | 120.5 ms              | 75.3 ms               | 494.8 ms              |
-| anchored      | 9.0 ms      | 35.3 ms               | 32.0 ms               | 126.9 ms              |
-| dirs          | 1.9 ms      | 13.7 ms               | 6.1 ms                | 26.4 ms               |
-| **backtrack** | **68.3 ms** | **1370.6 ms**         | **2902.4 ms**         | **1462.6 ms**         |
-| total         | **121 ms**  | **1661.2 ms (13.9x)** | **3128.2 ms (26.1x)** | **2360.7 ms (19.5x)** |
+(12 rounds in one process); each cell shows **initial → final**:
+
+| workload      |                   Zig |                     JS |                   Java |
+| ------------- | --------------------: | ---------------------: | ---------------------: |
+| flat          |         10.0 → 5.9 ms |         44.9 → 11.8 ms |         77.5 → 30.6 ms |
+| deep          |       112.3 → 26.1 ms |       1225.5 → 19.3 ms |      1504.1 → 121.2 ms |
+| doublestar    |       149.3 → 19.1 ms |       1067.1 → 57.8 ms |      2328.0 → 172.0 ms |
+| anchored      |        29.4 → 14.0 ms |        247.1 → 11.6 ms |        562.2 → 42.4 ms |
+| dirs          |          9.3 → 7.1 ms |         64.2 → 47.9 ms |         65.4 → 20.9 ms |
+| **backtrack** |   **796.9 → 35.9 ms** |  **16360.8 → 61.6 ms** |  **7867.8 → 130.9 ms** |
+| **total**     | **1107.1 → 108.1 ms** | **19009.7 → 165.0 ms** | **12405.0 → 517.8 ms** |
+| startup       |                 11 ms |                  48 ms |                 110 ms |
 
 Start-up, for completeness: Zig ~11 ms, JS ~48 ms, Java ~110 ms.
 
-The three JS columns are **the same vectors, the same port, three matching strategies**, measured on this machine with
-`--repeat 3` and processing only:
-
-- **regex** — one compiled regex per rule. Fast on five workloads, and catastrophic on `backtrack` (2902 ms), where the
-  engine explores exponentially many `**` splits.
-- **full DP** — the segment dynamic program for every rule. The total looks good only because `backtrack` dominates: it is
-  **1.6x-6x slower on the other five rows**, which the first version of this table hid by reporting only the total.
-- **hybrid** — the DP only for patterns containing a `**` segment, the compiled regex for everything else. Best total
-  (1661 ms), `backtrack` down 2.1x, and every other row within ~1.2x of the regex — except `doublestar` (120 vs 75 ms),
-  which is a pattern with `**` where the regex happened to be fast. That row is the open tuning question, not a settled
-  result.
-
-Both ports now run the same segment DP as the reference, with the ancestor memoisation that took them from 17x and 11x behind
-Zig to about 1.6x and 2.2x at the time it was measured - and the reference has since become roughly 10x faster than it started,
-so the relative gap moved again. The current numbers, the method, and every improvement (including what was measured and
-refuted) are in [doc/performance/](doc/performance/README.md) and [doc/measurement.md](doc/measurement.md).
-### How these numbers are produced
-
-Cold-process runs, with start-up measured separately and subtracted. That is the honest number for a CLI and it is
-also noisy: the same Java build has reported `backtrack` at 3205 ms and 5129 ms. [doc/measurement.md](doc/measurement.md) records the two measurement modes, the steady-state table (12 rounds inside one process) and every
-strategy tried on the Java port with what it cost. The Java column above predates the literal-segment fast path.
-
-### Two caveats
-
-- The runner measures a process; the start-up column is a subtraction, and on a loaded machine it is a noisy one. The
-  large rows are far outside that noise; the small ones are not.
-- The ports are no longer "young" in the sense that mattered: the Java port adopted the segment DP, then literal segments, then
-  the ancestor memoisation, and the JS port did the same. What remains is the reference's own head start - it has three indexes
-  the ports do not have, and [doc/performance/shared.md](doc/performance/shared.md) is the list a new port should work through.
+Full methodology and historical three-strategy comparison: [doc/performance/](doc/performance/README.md).
 ## Running the three
 
 ```text
