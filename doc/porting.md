@@ -100,6 +100,24 @@ fix, and it is worth knowing which. Reproduce it in a scratch repository with `g
 text and `git check-ignore -v --no-index -- <path>`; git decides. The unterminated-class case is the worked
 example of a vector being corrected against git.
 
+## Ship a walk utility
+
+The matcher answers one path; almost every consumer actually wants "the files in this tree that git would
+keep". Invariant 5 (an excluded directory is not entered) is what makes that cheap, and it is easy to get
+wrong once a walker is written, so each port here ships the recursion as a small utility and its example:
+[`src/walk.zig`](../src/walk.zig) with [`src/walk_example.zig`](../src/walk_example.zig), `js/walk.mjs` with
+`js/walk-example.mjs`, and `java/src/hr/hrg/gitignore/Walk.java` with `WalkExample.java`. A port that wants to
+be useful to projects that do not use `fs-meta` should ship the same three things:
+
+1. **Push on entry, pop on exit** — including for a directory with no `.gitignore`, so the pairs stay balanced;
+2. **Decide before descending** — an ignored directory is skipped, never listed and never entered;
+3. **Report paths relative to the walk root**, `/`-separated, so nothing a walk produces ever carries the root
+   it was given.
+
+The `.git` skip and the symlink rules are policy, not format: this project skips `.git` by default (it is
+repository metadata, not project content), reports a symlinked *file* the way git tracks it, and enters a
+symlinked *directory* only when asked.
+
 ## Measure it
 
 The bench exists so that a port's "fast" is a number on the same bytes as every other port's.

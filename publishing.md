@@ -1,7 +1,7 @@
 # Publishing
 
 `@hrg/gitignore` is published under the `hrg` npm scope; `publishConfig` sets `access` to `public`, so a plain
-`npm publish` publishes it publicly. This release is **0.3.0** — the same version as `build.zig.zon` and
+`npm publish` publishes it publicly. This release is **0.3.5** — the same version as `build.zig.zon` and
 `pom.xml`. The JavaScript package is plain ESM with no Bun API and no dependencies, so it installs and runs under
 Node as well as Bun (`engines.node` is `>=18`).
 
@@ -29,7 +29,7 @@ Java port moves from a local `mvn install` to the released `hr.hrg:gitignore:0.3
 
 ## Publishing the Maven artifact
 
-The release is **0.3.0**, the same version as `build.zig.zon` and `package.json`. Publishing is deliberate now:
+The release is **0.3.5**, the same version as `build.zig.zon` and `package.json`. Publishing is deliberate now:
 the Central publisher lives only in [`pom-release.xml`](pom-release.xml), and `pom.xml` has no publisher at all.
 
 ### Why the publisher is not in `pom.xml`, and never in a profile
@@ -98,7 +98,7 @@ Requirements, learned from a project of this author's that publishes this way (`
   `distributionManagement` in both POMs (Sonatype's `maven-releases` endpoint) is not a second upload path. The
   publisher uses `skipPublishing` to stop before the upload and the `central` server for credentials; it does **not**
   use `altDeploymentRepository`.
-- The version comes from the POM (`0.3.0`), and `build.zig.zon`/`package.json` must agree — they do.
+- The version comes from the POM (`0.3.5`), and `build.zig.zon`/`package.json` must agree — they do.
 
 Afterwards, `fs-meta` resolves `hr.hrg:gitignore` from the repository like any other artifact; it no longer needs the local
 `mvn install`.

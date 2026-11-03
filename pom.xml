@@ -14,14 +14,17 @@
         SOURCES. The matcher lives in `java/src/hr/hrg/gitignore`, laid out as a plain package tree because
         `bun java/run.mjs` compiles it with bare `javac` against `conformance/gitignore-vectors.json` — no
         Maven and no JUnit needed to say "34/34". This POM therefore points `<sourceDirectory>` there and
-        includes only the matcher itself:
+        includes the matcher plus the walk utility:
 
           * `GitIgnoreFile` and `GitIgnoreRules` are the public API;
-          * `Glob` is package-private and is the segment DP they use.
+          * `Glob` is package-private and is the segment DP they use;
+          * `Walk` is the recursive, gitignore-respecting traversal a consumer that does not use `fs-meta`
+            can call instead of writing one.
 
-        `Runner`, `Decide` and `Json` in the same directory are the vector/benchmark harness, not library
-        code: `Runner` has the `main` the vectors run, `Decide` the benchmark CLI, `Json` their parser. They
-        are deliberately NOT compiled into this jar — the artifact is only the matcher.
+        `Runner`, `Decide`, `Json` and `WalkExample` in the same directory are the vector/benchmark harness
+        and the example, not library code: `Runner` has the `main` the vectors run, `Decide` the benchmark
+        CLI, `Json` their parser, and `WalkExample` the program `doc`/README show. They are deliberately NOT
+        compiled into this jar.
 
         DEPENDENCIES. The matcher imports `java.util`, `java.util.regex`, `java.nio.file` and
         `java.nio.charset` — the JDK only. This POM declares no dependency, deliberately.
@@ -102,6 +105,7 @@
                         <include>hr/hrg/gitignore/GitIgnoreFile.java</include>
                         <include>hr/hrg/gitignore/GitIgnoreRules.java</include>
                         <include>hr/hrg/gitignore/Glob.java</include>
+                        <include>hr/hrg/gitignore/Walk.java</include>
                     </includes>
                 </configuration>
             </plugin>

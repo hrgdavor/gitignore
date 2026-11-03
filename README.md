@@ -10,6 +10,11 @@ structure — and so is using this as the **basis for another port or a reimplem
 benchmark exist so that a rewrite can prove it is both faster and still correct; they are not here to protect this
 implementation.
 
+**This project implements no daemon.** The only daemon/watcher in the ecosystem is fs-meta's **Zig** engine
+(`fsmeta daemon`, `fsmeta serve`). The JavaScript, Java and Zig code here is the shared matcher and walk that
+consumers — including clients of that daemon — use. Do not add a watcher, event loop, scheduler, socket server or
+second daemon here, even behind a flag; see [`AGENTS.md`](AGENTS.md).
+
 ## What moves here
 
 | from `fs-meta/src` | what it is                                                                             |
@@ -43,6 +48,8 @@ Three problems are the same for every port, and each one is cheaper to solve onc
 gitignore/
   src/gitignore.zig        the matcher (moved from fs-meta)
   src/ignore.zig           the chain (moved from fs-meta)
+  src/walk.zig             the recursive walk that pushes/pops the chain
+  src/walk_example.zig     `gitignore-walk`, the example program
   src/conformance_test.zig the vectors as a test
   src/decide_main.zig      the bench contract as a CLI (`ignore-decide`)
   js/                      the JavaScript port, exported by package.json as `@hrg/gitignore`
@@ -127,7 +134,7 @@ Steps 1–6 of [`plans/next-steps.md`](plans/next-steps.md) are implemented:
 - the corpus generator is [`conformance/from-git-check-ignore.mjs`](conformance/from-git-check-ignore.mjs), a
   separate step because it needs a checkout CI will not have.
 
-**0.3.0** is released — the same version on npm (`@hrg/gitignore`) and Maven Central (`hr.hrg:gitignore`):
+**0.3.5** is released — the same version on npm (`@hrg/gitignore`) and Maven Central (`hr.hrg:gitignore`):
 [publishing.md](publishing.md) records the release commands. `fs-meta`'s path dependency (`../gitignore` in its
 `build.zig.zon`, `file:` in its `package.json`) can therefore become a version range, the way `hr.hrg:wyhash` is
 consumed. The Java and JS
@@ -182,31 +189,83 @@ per-entry one).
 The matcher is packaged for both languages, so a consumer depends on it instead of copying the files.
 
 ```js
-// JavaScript: package.json exports `.` and `./glob`.
+// JavaScript: package.json exports `.`, `./glob` and `./walk`.
 import { GitIgnoreRules, parseGitignore, readGitignore } from '@hrg/gitignore';
 import { compileSegments, segmentsMatch } from '@hrg/gitignore/glob';
+import { walk } from '@hrg/gitignore/walk';
 ```
 
 The package is `package.json` here (`"type": "module"`, `"sideEffects": false`, `.` → `js/gitignore.mjs`,
-`./glob` → `js/glob.mjs`, `./package.json` → `package.json`); `bun pm pack` ships exactly those two modules plus
-`package.json` and the README, nothing else.
+`./glob` → `js/glob.mjs`, `./walk` → `js/walk.mjs`, `./package.json` → `package.json`); `bun pm pack` ships
+exactly those three modules plus `package.json` and the README, nothing else.
 
 ```xml
 <!-- Java: hr.hrg:gitignore, resolved the way hr.hrg:wyhash is. -->
 <dependency>
     <groupId>hr.hrg</groupId>
     <artifactId>gitignore</artifactId>
-    <version>0.3.0</version>
+    <version>0.3.5</version>
 </dependency>
 ```
 
-`pom.xml` builds the three matcher classes — `GitIgnoreFile`, `GitIgnoreRules` and the package-private `Glob` —
-with JDK 25. `bun java/run.mjs` remains the zero-build gate for the port. A checkout can also be installed into the
-local repository once:
+`pom.xml` builds the matcher classes — `GitIgnoreFile`, `GitIgnoreRules` and the package-private `Glob` — plus
+the `Walk` utility, with JDK 25. `bun java/run.mjs` remains the zero-build gate for the port. A checkout can also
+be installed into the local repository once:
 
 ```text
 cd gitignore
 mvn -q install
+```
+
+## Walking a tree, without `fs-meta`
+
+The matcher answers one path at a time. A walk needs the stack around it: push a directory's `.gitignore` on
+entry, pop it on exit, and **never enter a directory the rules exclude** — the last part is where the speed
+comes from, because a `node_modules/` or `target/` with tens of thousands of files then costs one directory
+read and one decision instead of one decision per file. Every port ships that recursion as a small utility, so
+a project that only wants fast, gitignore-aware traversal does not have to write it — or depend on `fs-meta`:
+
+```js
+import { walk } from '@hrg/gitignore/walk';
+walk('src', (relativePath) => console.log(relativePath));
+// walk(root, onFile, { onDir, followSymlinks: false, skipDotGit: true })
+```
+
+```java
+import hr.hrg.gitignore.Walk;
+Walk.walk(Path.of("src"), System.out::println);
+// Walk.walk(root, onFile, onDir, new Walk.Options(false, true))
+```
+
+```zig
+const walk = @import("walk.zig");
+var list = walk.List.init(allocator);
+defer list.deinit();
+try walk.walk(io, allocator, "src", .{}, &list);
+```
+
+Reported paths are `/`-separated and relative to the root, with no leading slash; sibling order is the file
+system's, so sort when a stable order matters. The cases a walk can get wrong are the ones the tests pin:
+
+- **an ignored directory is not entered** — so a `!` pattern written below it cannot re-include anything, which
+  is git's documented rule and not a shortcut;
+- **a nested `.gitignore` re-includes what a shallower one excluded** — `!keep.log` under an outer `*.log`
+  works exactly as `git check-ignore` reports it;
+- **`.git` is repository metadata, not project content** — skipped by default, reported with `skipDotGit: false`;
+- **a symlinked file is reported** (git tracks it as a file); a symlinked *directory* is entered only with
+  `followSymlinks`, because a link can point at a parent and turn the walk into a loop.
+
+`walk` is a traversal library, not a watcher. It has no event loop, no debounce and no server; a tool that needs the
+live change stream subscribes to fs-meta's Zig daemon (or polls its trio). Do not grow a watcher or a daemon here —
+see [`AGENTS.md`](AGENTS.md).
+
+The examples are runnable and agree on the same tree — on this repository's own checkout all three report the
+same list, file for file:
+
+```text
+bun js/walk-example.mjs [root]
+bun java/run.mjs && java -cp java/out hr.hrg.gitignore.WalkExample [root]
+D:\wrk\zig\17\zig.exe build && zig-out/bin/gitignore-walk.exe [root]   # or: zig build walk -Droot=<dir>
 ```
 
 ## Publishing

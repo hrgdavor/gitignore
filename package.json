@@ -1,6 +1,6 @@
 {
   "name": "@hrg/gitignore",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "git's .gitignore (wildmatch) semantics: one matcher, shared by the Zig, JavaScript and Java ports.",
   "license": "LicenseRef-GPL-3.0-with-Commons-Clause",
   "author": "Davor Hrg",
@@ -13,11 +13,13 @@
   "exports": {
     ".": "./js/gitignore.mjs",
     "./glob": "./js/glob.mjs",
+    "./walk": "./js/walk.mjs",
     "./package.json": "./package.json"
   },
   "files": [
     "js/gitignore.mjs",
     "js/glob.mjs",
+    "js/walk.mjs",
     "README.md"
   ],
   "engines": {

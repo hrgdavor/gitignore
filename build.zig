@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
 
     // Tests: every module, so the chain, the vectors and the matcher are all covered.
     const test_step = b.step("test", "Run the matcher, chain and conformance tests");
-    const modules = [_][]const u8{ "gitignore", "ignore", "conformance_test" };
+    const modules = [_][]const u8{ "gitignore", "ignore", "walk", "conformance_test" };
     // `-Dvectors=<file>` runs any vectors file in the same schema, which is how a corpus generated from a
     // checkout (conformance/from-git-check-ignore.mjs) is verified without editing the hand-authored file.
     const vectors_path = b.option(
@@ -78,6 +78,25 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(decide);
+
+    // The walk example: a usable program, and the shape a consumer copies. `zig build` then
+    // `zig-out/bin/gitignore-walk [root]` lists what a gitignore-aware walk keeps.
+    const walk_example = b.addExecutable(.{
+        .name = "gitignore-walk",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/walk_example.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(walk_example);
+
+    const walk_run = b.addRunArtifact(walk_example);
+    // The root is a build option rather than a trailing `--` argument: `-Droot=<dir>` is the form this
+    // toolchain's build runner hands to a step. Without it the example walks the current directory.
+    walk_run.addArg(b.option([]const u8, "root", "Directory gitignore-walk lists (default: .)") orelse ".");
+    const walk_step = b.step("walk", "Run gitignore-walk: zig build walk [-Droot=<dir>]");
+    walk_step.dependOn(&walk_run.step);
 
     const run_step = b.step("run", "Run ignore-decide: zig build run -- --rules <file> --paths <file>");
     run_step.dependOn(&b.addRunArtifact(decide).step);
